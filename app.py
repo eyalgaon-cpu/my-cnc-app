@@ -2,7 +2,7 @@ import streamlit as st
 import re, os, zipfile
 from collections import defaultdict
 
-# הגדרות הכלים הסופיות של אבי השכן
+# הגדרות כלים סופיות - אבי השכן
 AVI_LOGIC = {
     "142": {"name": "כרסום 6 מילימטר", "cnc": "T2"},
     "158": {"name": "כרסום 8 מילימטר", "cnc": "T3"},
@@ -18,38 +18,43 @@ def convert_logic(mpr_text, tool_mapping, num_passes):
     thickness = float(t_match.group(1)) if t_match else 16.5
     
     geometries = {}
+    # פיצול לפי בלוקי גיאומטריה ]1, ]2 וכו'
     blocks = re.split(r'\](\d+)', mpr_text)
     for i in range(1, len(blocks), 2):
-        block_id, pts = blocks[i], []
-        for line in blocks[i+1].split('\n'):
-            x_m, y_m = re.search(r'X=([\d.-]+)', line), re.search(r'Y=([\d.-]+)', line)
-            if x_m and y_m: pts.append((float(x_m.group(1)), float(y_m.group(1))))
+        block_id = blocks[i]
+        block_content = blocks[i+1]
+        pts = []
+        # פיצול פנימי לפי אלמנטים ($E0, $E1...) לטיפול בשורות נפרדות
+        elements = re.split(r'\$E\d+', block_content)
+        for elem in elements:
+            x_m = re.search(r'X=([\d.-]+)', elem)
+            y_m = re.search(r'Y=([\d.-]+)', elem)
+            if x_m and y_m:
+                pts.append((float(x_m.group(1)), float(y_m.group(1))))
         geometries[block_id] = pts
 
-    # איסוף פעולות
     drills_by_tool = defaultdict(list)
     millings_by_tool = defaultdict(list)
 
-    # חילוץ קידוחים <102
+    # חילוץ קידוחים
     drills = re.findall(r'<102.*?XA="([\d.]+)".*?YA="([\d.]+)".*?TI="([\d.]+)".*?(?:TNO="(\d+)")?.*?', mpr_text, re.DOTALL)
     for x, y, depth, tno in drills:
         tno = tno if tno else "121"
         drills_by_tool[tno].append({'x': float(x), 'y': float(y), 'depth': float(depth)})
 
-    # חילוץ כרסומים <105
+    # חילוץ כרסומים
     millings = re.findall(r'<105.*?EA="(\d+):.*?ZA="([\d.-]+)".*?TNO="(\d+)".*?', mpr_text, re.DOTALL)
     for geo_id, za, tno in millings:
         millings_by_tool[tno].append({'geo_id': geo_id, 'za': float(za)})
 
     nc_out, l_num, last_tool = [], 10, ""
 
-    # ביצוע קידוחים תחילה (ממוינים לפי כלי)
+    # 1. שלב הקידוחים
     for tno in sorted(drills_by_tool.keys()):
         cnc_tool = tool_mapping.get(tno, {"cnc": "T44"})["cnc"]
         if cnc_tool != last_tool:
             nc_out.extend([f"N{l_num} {cnc_tool} M06", f"N{l_num+10} G43 H{cnc_tool[1:]} S4000 M03"])
             l_num, last_tool = l_num + 20, cnc_tool
-        
         for d in drills_by_tool[tno]:
             z_target = round(thickness - d['depth'], 3)
             nc_out.extend([
@@ -59,13 +64,12 @@ def convert_logic(mpr_text, tool_mapping, num_passes):
             ])
             l_num += 30
 
-    # ביצוע כרסומים בסוף (ממוינים לפי כלי)
+    # 2. שלב הכרסומים
     for tno in sorted(millings_by_tool.keys()):
         cnc_tool = tool_mapping.get(tno, {"cnc": "T2"})["cnc"]
         if cnc_tool != last_tool:
             nc_out.extend([f"N{l_num} {cnc_tool} M06", f"N{l_num+10} G43 H{cnc_tool[1:]} S17000 M03"])
             l_num, last_tool = l_num + 20, cnc_tool
-        
         for m in millings_by_tool[tno]:
             pts = geometries.get(m['geo_id'])
             if pts:
@@ -80,31 +84,21 @@ def convert_logic(mpr_text, tool_mapping, num_passes):
                         l_num += 10
                     nc_out.append(f"N{l_num} G00 Z{thickness + 10:.3f}")
                     l_num += 10
-                    
     nc_out.append(f"N{l_num} M30")
     return "\n".join(nc_out)
 
 st.set_page_config(page_title="Darwish CNC Pro", page_icon="🪚")
-st.title("🪚 המרת MPR ל-NC - אופטימיזציית אבי")
-
-st.sidebar.header("סדר פעולות אוטומטי:")
-st.sidebar.write("1. קידוחים (לפי כלי)")
-st.sidebar.write("2. כרסומים (לפי כלי)")
-
+st.title("🪚 המרת MPR ל-NC - גרסה 8.0")
 mode = st.radio("בחר שיטת עבודה:", ('לפי MPR', '2 פסיעות (2.0 ומינוס 0.2)'))
 pass_val = 2 if '2 פסיעות' in mode else 0
-
 uploaded = st.file_uploader("העלה קבצי MPR", accept_multiple_files=True)
-
 if uploaded:
-    if st.button("בצע המרה אופטימלית (ZIP)", type="primary"):
+    if st.button("בצע המרה (ZIP)", type="primary"):
         zip_path = 'CNC_KITCHEN_FILES.zip'
         with zipfile.ZipFile(zip_path, 'w') as zip_f:
             for file in uploaded:
                 content = file.read().decode('utf-8', errors='ignore')
                 res = convert_logic(content, AVI_LOGIC, pass_val)
-                nc_name = file.name.replace(".mpr", ".nc")
-                zip_f.writestr(nc_name, res)
-        
+                zip_f.writestr(file.name.replace(".mpr", ".nc"), res)
         with open(zip_path, "rb") as f:
-            st.download_button("📂 הורד קבצים ממוינים (ZIP)", f, zip_path)
+            st.download_button("📂 הורד ZIP מעודכן", f, zip_path)
