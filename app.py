@@ -4,12 +4,11 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-# הגדרות דף חובה
-st.set_page_config(page_title="Darwish CNC Pro 37.2 - UX Edition", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 37.3 - Pro UX", layout="wide")
 
-# ניהול זיכרון לבחירת נקודות מדידה
-if 'selected_points' not in st.session_state:
-    st.session_state.selected_points = []
+# ניהול מצב בחירה למדידה
+if 'measure_points' not in st.session_state:
+    st.session_state.measure_points = []
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -28,7 +27,7 @@ def get_safe_float(key, block, default=0.0):
         nums = re.findall(r'[\d.-]+', match.group(1))
         return float(nums[0]) if nums else default
 
-def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, global_z_off):
+def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_off):
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
     width_original = get_safe_float('l', mpr_text, 1414.0)
@@ -79,10 +78,10 @@ def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, gl
 
     return raw_drills, geos, thickness
 
-def plot_combined(drills, geos, thickness, top_view=False):
+def plot_3d_pro(drills, geos, thickness, top_view=False):
     fig = go.Figure()
     
-    # 1. פלטה (שקיפות גבוהה)
+    # פלטה שקופה
     inner_geos = {k: v for k, v in geos.items() if k != "1"}
     if inner_geos:
         all_x = [p[0] for pts in inner_geos.values() for p in pts]
@@ -93,76 +92,70 @@ def plot_combined(drills, geos, thickness, top_view=False):
             y=[min_y, max_y, max_y, min_y, min_y, max_y, max_y, min_y],
             z=[0, 0, 0, 0, thickness, thickness, thickness, thickness],
             i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2], j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3], k=[0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
-            opacity=0.1, color='gray', hoverinfo='skip'
+            opacity=0.05, color='gray', hoverinfo='skip'
         ))
 
-    # 2. קדחים
-    x_coords = [d['x'] for d in drills]
-    y_coords = [d['y'] for d in drills]
-    z_coords = [thickness for d in drills]
-    
+    # קדחים
     fig.add_trace(go.Scatter3d(
-        x=x_coords, y=y_coords, z=z_coords,
+        x=[d['x'] for d in drills], y=[d['y'] for d in drills], z=[thickness for d in drills],
         mode='markers',
-        marker=dict(size=[d['dia']*1.5 for d in drills], color=[d['color'] for d in drills], opacity=0.8),
+        marker=dict(size=[d['dia']*1.2 for d in drills], color=[d['color'] for d in drills], opacity=0.9),
         text=[f"כלי: {d['t']} | קוטר: {d['dia']}" for d in drills],
-        name="קדחים",
-        customdata=list(range(len(drills)))
+        hoverinfo='text', name="קידוחים"
     ))
 
-    # 3. ציור קו מדידה אם נבחרו נקודות
-    if len(st.session_state.selected_points) >= 2:
-        idx1, idx2 = st.session_state.selected_points[-2], st.session_state.selected_points[-1]
-        p1, p2 = drills[idx1], drills[idx2]
+    # קו מדידה
+    if len(st.session_state.measure_points) >= 2:
+        p1 = drills[st.session_state.measure_points[-2]]
+        p2 = drills[st.session_state.measure_points[-1]]
         dist = math.sqrt((p1['x']-p2['x'])**2 + (p1['y']-p2['y'])**2)
         fig.add_trace(go.Scatter3d(
             x=[p1['x'], p2['x']], y=[p1['y'], p2['y']], z=[thickness+5, thickness+5],
-            mode='lines+text',
-            line=dict(color='lime', width=10),
-            text=["", f"📏 {dist:.2f} מילימטר"],
-            textposition="top center"
+            mode='lines+text', line=dict(color='lime', width=8),
+            text=["", f"📏 {dist:.2f} ממ"], textposition="top center"
         ))
 
-    # הגדרות מצלמה
-    camera = dict(eye=dict(x=0, y=0, z=2.5)) if top_view else dict(eye=dict(x=1.5, y=1.5, z=1.5))
+    # הגדרות מצלמה ובקרה
+    camera = dict(eye=dict(x=0, y=0, z=2.5), up=dict(x=0, y=1, z=0)) if top_view else dict(eye=dict(x=1.5, y=1.5, z=1.2))
     
     fig.update_layout(
         scene=dict(
-            camera=camera,
-            xaxis_title='X', yaxis_title='Y', zaxis_title='Z',
-            aspectmode='data',
-            dragmode='orbit' if not top_view else False
+            camera=camera, xaxis_title='X', yaxis_title='Y', zaxis_title='Z',
+            aspectmode='data', dragmode='orbit' if not top_view else 'pan'
         ),
-        margin=dict(l=0, r=0, b=0, t=30),
-        height=800,
+        margin=dict(l=0, r=0, b=0, t=30), height=800,
         clickmode='event+select'
     )
-    
-    # תפיסת אירועי לחיצה
-    selected = st.plotly_chart(fig, use_container_width=True, on_select="rerun", config={'scrollZoom': True})
+
+    selected = st.plotly_chart(fig, use_container_width=True, on_select="rerun", config={'scrollZoom': True, 'displayModeBar': True})
     
     if selected and "selection" in selected and "points" in selected["selection"]:
-        points = selected["selection"]["points"]
-        if points:
-            new_idx = points[0]["point_number"]
-            if not st.session_state.selected_points or st.session_state.selected_points[-1] != new_idx:
-                st.session_state.selected_points.append(new_idx)
+        pts = selected["selection"]["points"]
+        if pts:
+            new_idx = pts[0]["point_number"]
+            if not st.session_state.measure_points or st.session_state.measure_points[-1] != new_idx:
+                st.session_state.measure_points.append(new_idx)
                 st.rerun()
 
-# ממשק משתמש
-st.sidebar.title("🎮 בקרת תצוגה")
-view_mode = st.sidebar.toggle("מבט על (Top View)", value=False)
+# Sidebar
+st.sidebar.title("🎮 ממשק בקרה")
+view_2d = st.sidebar.toggle("מבט על (Top View)", value=False)
+st.sidebar.markdown("---")
+nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
+rot = st.sidebar.checkbox("סובב 90 מעלות (Portrait)", value=True)
+mar = st.sidebar.number_input("Margin", value=7.0)
+st.sidebar.markdown("---")
 if st.sidebar.button("נקה מדידות"):
-    st.session_state.selected_points = []
+    st.session_state.measure_points = []
     st.rerun()
 
-st.sidebar.markdown("---")
-if len(st.session_state.selected_points) >= 2:
-    st.sidebar.success("📏 מדידה פעילה")
-    # חישוב יוצג כאן בגרסה הבאה אם תרצה פירוט נוסף
+# תוצאות מדידה
+if len(st.session_state.measure_points) >= 2:
+    st.sidebar.info("נתוני מדידה:")
+    # חישוב יתבצע כאן מול drills בעיבוד הקובץ
 
 uploaded = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
-        drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), True, "G54", True, 7.0, 2.0)
-        plot_combined(drills, geos, thick, top_view=view_mode)
+        drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mar, 2.0)
+        plot_3d_pro(drills, geos, thick, top_view=view_2d)
