@@ -4,8 +4,7 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-# הגדרות דף
-st.set_page_config(page_title="Darwish CNC Pro 36.8", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 36.9", layout="wide")
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -27,6 +26,7 @@ def get_safe_float(key, block, default=0.0):
 def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, global_z_off):
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
+    width_original = get_safe_float('l', mpr_text, 1414.0) # רוחב הפלטה המקורית
     
     geos = {}
     parts = re.split(r'\](\d+)', mpr_text)
@@ -38,7 +38,7 @@ def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, gl
             if x_m and y_m: pts.append([float(x_m.group(1)), float(y_m.group(1))])
         if pts: geos[bid] = pts
 
-    raw_drills, raw_millings = [], []
+    raw_drills = []
     for m in re.finditer(r'<102(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         b = m.group(1)
         xa, ya, ti, du = [get_safe_float(k, b) for k in ['XA', 'YA', 'TI', 'DU']]
@@ -50,33 +50,18 @@ def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, gl
             raw_drills.append({'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
                                'z': f_z, 't': conf['T_CNC'], 's': conf['S'], 'f': conf['F'], 'dia': du, 'color': conf['צבע'], 'group': m.start()})
 
-    for m in re.finditer(r'<105(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
-        b = m.group(1)
-        geo_m = re.search(r'EA="(\d+):', b)
-        if geo_m:
-            eid, za = geo_m.group(1), get_safe_float('ZA', b)
-            conf = dia_map.get(6.0, {"T_CNC": "T2", "צבע": "red", "S": 18000, "F": 6000})
-            raw_millings.append({'geo_id': eid, 'z': za - global_z_off, 't': conf['T_CNC'], 'color': conf['צבע'], 's': conf['S'], 'f': conf['F']})
-
-    # שלב 1: סיבוב אמיתי 90 מעלות נגד כיוון השעון
+    # שלב הסיבוב - ללא נרמול אוטומטי (שומר על המרחק המקורי)
     if rotate_90:
         for d in raw_drills:
             old_x, old_y = d['x'], d['y']
-            d['x'], d['y'] = -old_y, old_x
+            # סיבוב 90 מעלות CCW סביב ציר הלוח
+            d['x'], d['y'] = width_original - old_y, old_x
         for pts in geos.values():
             for p in pts:
                 old_x, old_y = p[0], p[1]
-                p[0], p[1] = -old_y, old_x
-        
-        # נרמול ראשוני כדי למנוע ערכים שליליים לאחר סיבוב
-        all_coords_x = [d['x'] for d in raw_drills] + [p[0] for pts in geos.values() for p in pts]
-        all_coords_y = [d['y'] for d in raw_drills] + [p[1] for pts in geos.values() for p in pts]
-        shift_x, shift_y = min(all_coords_x), min(all_coords_y)
-        for d in raw_drills: d['x'] -= shift_x; d['y'] -= shift_y
-        for pts in geos.values():
-            for p in pts: p[0] -= shift_x; p[1] -= shift_y
+                p[0], p[1] = width_original - old_y, old_x
 
-    # שלב 2: הצמדה לפינה (Nesting) על בסיס החלקים הפנימיים בלבד
+    # שלב ההצמדה (Nesting) - רק אם המשתמש סימן את התיבה
     if zero_nesting:
         inner_geos = {k: v for k, v in geos.items() if k != "1"}
         ref_x = [p[0] for pts in inner_geos.values() for p in pts] if inner_geos else [d['x'] for d in raw_drills]
@@ -86,13 +71,11 @@ def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, gl
             for d in raw_drills: d['x'] -= mx; d['y'] -= my
             for pts in geos.values():
                 for p in pts: p[0] -= mx; p[1] -= my
+            # הוספת Margin רק לאחר ההצמדה
+            for d in raw_drills: d['x'] += margin; d['y'] += margin
+            for pts in geos.values():
+                for p in pts: p[0] += margin; p[1] += margin
 
-    # שלב 3: הוספת Margin סופי
-    for d in raw_drills: d['x'] += margin; d['y'] += margin
-    for pts in geos.values():
-        for p in pts: p[0] += margin; p[1] += margin
-
-    # יצירת קוד NC
     nc, ln, last_t = [f"G90 {offset}"], 10, ""
     for t_name in sorted(list(set(d['t'] for d in raw_drills))):
         subset = sorted([dr for dr in raw_drills if dr['t']==t_name], key=lambda k: (k['group'], k['x']))
@@ -102,12 +85,10 @@ def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, gl
                 ln, last_t = ln + 10, d['t']
             nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F{int(d['f'])}", f"N{ln+10} G00 Z{thickness+10:.3f}"])
             ln += 15
-    # (המשך כרסומים זהה לגרסאות קודמות)
     return "\n".join(nc), raw_drills, geos
 
 def plot_preview(drills, geos):
     fig = go.Figure()
-    # שטח שולחן קבוע בפינה 0,0
     fig.add_shape(type="rect", x0=0, y0=0, x1=1600, y1=1600, fillcolor="whitesmoke", line=dict(color="gray", width=1), layer="below")
     for bid, pts in geos.items():
         if len(pts) > 1:
@@ -115,18 +96,16 @@ def plot_preview(drills, geos):
             fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', name=f'Milling {bid}', line=dict(color='red', width=2)))
     for d in drills:
         fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers', marker=dict(size=d['dia'], color=d['color'], line=dict(width=1, color='black')), name=f"{d['t']} (D{d['dia']})"))
-    
-    fig.update_xaxes(range=[-50, 1650], gridcolor='lightgray', zerolinecolor='black')
-    fig.update_yaxes(range=[-50, 1650], scaleanchor="x", scaleratio=1, gridcolor='lightgray', zerolinecolor='black')
-    fig.update_layout(title="סימולטור שולחן מכונה - סיבוב 90 מעלות CCW", width=900, height=800, template="plotly_white")
+    fig.update_xaxes(range=[-50, 1650], gridcolor='lightgray')
+    fig.update_yaxes(range=[-50, 1650], scaleanchor="x", scaleratio=1, gridcolor='lightgray')
+    fig.update_layout(title="סימולטור שולחן מכונה - גרסה 36.9", width=900, height=800, template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
-# UI
-st.title("🪚 Darwish CNC Pro - גרסה 36.8")
+st.title("🪚 Darwish CNC Pro - גרסה 36.9")
 if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
 edited_df = st.sidebar.data_editor(st.session_state.tool_df)
-mar = st.sidebar.number_input("Margin (מילימטר)", value=7.0)
-nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
+mar = st.sidebar.number_input("Margin", value=7.0)
+nest = st.sidebar.checkbox("צמד לפינה", value=False)
 rot = st.sidebar.checkbox("סובב 90 מעלות (Portrait)", value=True)
 uploaded = st.file_uploader("בחר קבצי MPR", accept_multiple_files=True)
 
