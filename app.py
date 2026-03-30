@@ -4,7 +4,8 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Darwish CNC Pro 36.0", layout="wide")
+# חובה: פקודה ראשונה
+st.set_page_config(page_title="Darwish CNC Pro 36.1", layout="wide")
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -23,7 +24,7 @@ def get_safe_float(key, block, default=0.0):
         nums = re.findall(r'[\d.-]+', match.group(1))
         return float(nums[0]) if nums else default
 
-def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting, margin, global_z_off):
+def convert_logic(mpr_text, tool_df, swap_axes, offset, zero_nesting, margin, global_z_off):
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
     
@@ -45,22 +46,20 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
         conf = dia_map.get(round(du, 1))
         if conf is None: continue
         
-        final_z = (thickness - ti) - global_z_off - conf.get("תיקון_Z", 0.0)
+        f_z = (thickness - ti) - global_z_off - conf.get("תיקון_Z", 0.0)
         for i in range(an):
             raw_drills.append({
-                'x': xa + i * ab * math.cos(math.radians(wi)),
-                'y': ya + i * ab * math.sin(math.radians(wi)),
-                'z': final_z, 't': conf['T_CNC'], 's': conf['S'], 'f': conf['F'], 'dia': du, 'color': conf['צבע']
+                'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
+                'z': f_z, 't': conf['T_CNC'], 's': conf['S'], 'f': conf['F'], 'dia': du, 'color': conf['צבע'], 'group': m.start()
             })
 
     for m in re.finditer(r'<105(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         b = m.group(1)
         geo_m = re.search(r'EA="(\d+):', b)
         if geo_m:
-            eid = geo_m.group(1)
-            za = get_safe_float('ZA', b)
-            conf = dia_map.get(6.0, {"T_CNC": "T2", "צבע": "red"})
-            raw_millings.append({'geo_id': eid, 'z': za - global_z_off, 't': conf['T_CNC'], 'color': conf['צבע']})
+            eid, za = geo_m.group(1), get_safe_float('ZA', b)
+            conf = dia_map.get(6.0, {"T_CNC": "T2", "צבע": "red", "S": 18000, "F": 6000})
+            raw_millings.append({'geo_id': eid, 'z': za - global_z_off, 't': conf['T_CNC'], 'color': conf['צבע'], 's': conf['S'], 'f': conf['F']})
 
     if zero_nesting:
         ref_x = [p[0] for pts in geos.values() for p in pts] if geos else [d['x'] for d in raw_drills]
@@ -79,43 +78,55 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
             p[0] += margin; p[1] += margin
             if swap_axes: p[0], p[1] = p[1], p[0]
 
-    # יצירת ה-G-Code (הלוגיקה נשארת זהה)
-    nc = [f"G90 {offset}"]
-    # ... (המשך לוגיקת הכתיבה המוכרת שלך) ...
-    # לצורך הקיצור כאן, נניח שהפונקציה מחזירה גם את רשימת הנקודות להדמיה
-    return nc, raw_drills, geos
+    nc, ln, last_t = [f"G90 {offset}"], 10, ""
+    for t_name in sorted(list(set(d['t'] for d in raw_drills))):
+        subset = sorted([dr for dr in raw_drills if dr['t']==t_name], key=lambda k: (k['group'], k['x']))
+        for d in subset:
+            if d['t'] != last_t:
+                nc.extend([f"N{ln} {d['t']} M06", f"N{ln+5} G43 H{d['t'][1:]} S{int(d['s'])} M03"])
+                ln, last_t = ln + 10, d['t']
+            nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F{int(d['f'])}", f"N{ln+10} G00 Z{thickness+10:.3f}"])
+            ln += 15
+            
+    for m in raw_millings:
+        if m['t'] != last_t:
+            nc.extend([f"N{ln} {m['t']} M06", f"N{ln+5} G43 H{m['t'][1:]} S{int(m['s'])} M03"])
+            ln, last_t = ln + 10, m['t']
+        pts = geos.get(m['geo_id'])
+        if pts:
+            for zv in [m['z']-0.25, m['z']]:
+                nc.append(f"N{ln} G00 X{pts[0][0]:.3f} Y{pts[0][1]:.3f}")
+                nc.append(f"N{ln+5} G01 Z{zv:.3f} F{int(m['f'])}")
+                ln+=10
+                for p in pts[1:]: nc.append(f"N{ln} G01 X{p[0]:.3f} Y{p[1]:.3f}"); ln+=5
+                nc.append(f"N{ln} G00 Z{thickness+10:.3f}"); ln+=5
+    nc.append(f"N{ln} M30")
+    return "\n".join(nc), raw_drills, geos
 
-def plot_preview(drills, geos, margin):
+def plot_preview(drills, geos):
     fig = go.Figure()
-    # ציור קונטור (כרסום)
     for bid, pts in geos.items():
         if len(pts) > 1:
             x_pts, y_pts = zip(*pts)
             fig.add_trace(go.Scatter(x=x_pts, y=y_pts, mode='lines', name=f'Milling {bid}', line=dict(color='red')))
-    
-    # ציור קידוחים
     for d in drills:
-        fig.add_trace(go.Scatter(
-            x=[d['x']], y=[d['y']], mode='markers',
-            marker=dict(size=d['dia'], color=d['color']),
-            name=f"{d['t']} (Dia {d['dia']})",
-            hovertemplate=f"X: %{{x}}<br>Y: %{{y}}<br>Z: {d['z']:.2f}"
-        ))
-    
-    fig.update_layout(title="תצוגה מקדימה - אבי CNC", xaxis_title="X (מילימטר)", yaxis_title="Y (מילימטר)",
-                      width=800, height=600, showlegend=True, template="plotly_white")
+        fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers', marker=dict(size=d['dia'], color=d['color']), name=f"{d['t']} (D{d['dia']})", hovertemplate=f"X:%{{x}}<br>Y:%{{y}}<br>Z:{d['z']:.2f}"))
+    fig.update_layout(title="תצוגה מקדימה - אבי CNC", xaxis_title="X (מילימטר)", yaxis_title="Y (מילימטר)", width=800, height=600, template="plotly_white")
     st.plotly_chart(fig)
 
 # UI
-st.title("🪚 Darwish CNC Pro - גרסה 36.0")
+st.title("🪚 Darwish CNC Pro - גרסה 36.1")
 if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
 edited_df = st.sidebar.data_editor(st.session_state.tool_df)
-mar = st.sidebar.number_input("Margin", value=7.0)
-nest = st.sidebar.checkbox("צמד לפינה", value=True)
+z_off = st.sidebar.number_input("כיול Z כללי", value=2.0)
+mar = st.sidebar.number_input("Margin (מרווח סופי)", value=7.0)
+nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
+swap = st.sidebar.checkbox("החלף צירים (X ↔ Y)", value=True)
 uploaded = st.file_uploader("בחר קבצי MPR", accept_multiple_files=True)
 
 if uploaded:
     for f in uploaded:
-        nc_list, drills, geos = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, 0, True, "G54", nest, mar, 2.0)
-        plot_preview(drills, geos, mar)
-        st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", "\n".join(nc_list), f.name.replace(".mpr", ".nc"))
+        nc_txt, drills, geos = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, swap, "G54", nest, mar, z_off)
+        plot_preview(drills, geos)
+        st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", nc_txt, f.name.replace(".mpr", ".nc"))
+        st.code(nc_txt, language='gcode')
