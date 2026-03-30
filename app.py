@@ -4,7 +4,7 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Darwish CNC Pro 37.7", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 38.0", layout="wide")
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -74,68 +74,60 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
             for pts in geos.values():
                 for p in pts: p[0] += margin; p[1] += margin
 
-    nc = [f"G90 G54"]
-    # (לוגיקה של ייצור NC נשמרת...)
+    nc, ln, last_t = [f"G90 G54"], 10, ""
+    for t_name in sorted(list(set(d['t'] for d in raw_drills))):
+        subset = sorted([dr for dr in raw_drills if dr['t']==t_name], key=lambda k: (k['group'], k['x']))
+        for d in subset:
+            if d['t'] != last_t:
+                nc.extend([f"N{ln} {d['t']} M06", f"N{ln+5} G43 H{d['t'][1:]} S4000 M03"])
+                ln, last_t = ln + 10, d['t']
+            nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F2000", f"N{ln+10} G00 Z{thickness+10:.3f}"])
+            ln += 15
+            
     return "\n".join(nc), raw_drills, geos, thickness
 
-def plot_master_3d(drills, geos, thickness, top_view, m1, m2):
+def plot_2d_clean(drills, geos, thickness):
     fig = go.Figure()
     
-    # 1. שולחן מכונה
-    fig.add_trace(go.Mesh3d(
-        x=[0, 0, 2000, 2000, 0, 0, 2000, 2000], y=[0, 1500, 1500, 0, 0, 1500, 1500, 0],
-        z=[-1, -1, -1, -1, 0, 0, 0, 0],
-        opacity=0.03, color='gray', hoverinfo='skip'
-    ))
+    # שולחן המכונה
+    fig.add_shape(type="rect", x0=0, y0=0, x1=2000, y1=1500, fillcolor="whitesmoke", line=dict(color="gray", width=1), layer="below")
+    
+    # חלקים וכרסומים
+    for bid, pts in geos.items():
+        if len(pts) > 1:
+            x_p, y_p = zip(*pts)
+            fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2), hoverinfo='skip', name=f'Milling {bid}'))
 
-    # 2. קידוחים
-    for i, d in enumerate(drills):
+    # קדחים
+    for d in drills:
         actual_depth = thickness - d['z']
-        fig.add_trace(go.Scatter3d(
-            x=[d['x'], d['x']], y=[d['y'], d['y']], z=[thickness, d['z']],
-            mode='lines+markers',
-            marker=dict(size=[d['dia']*1.5, 0], color=d['color']),
-            line=dict(color=d['color'], width=7),
-            name=f"#{i}: {d['desc']}",
+        fig.add_trace(go.Scatter(
+            x=[d['x']], y=[d['y']], mode='markers',
+            marker=dict(size=d['dia'], color=d['color'], line=dict(width=1, color='black')),
+            name=f"{d['t']}: {d['desc']}",
             hovertemplate=(
                 f"<b>{d['desc']}</b><br>"
-                f"מספר כלי: {d['t']}<br>"
-                f"עומק חדירה (בפועל): {actual_depth:.2f} ממ<br>"
+                f"מספר כלי במכונה: {d['t']}<br>"
+                f"עומק חדירה בפועל: {actual_depth:.2f} מילימטר<br>"
                 f"X: %{{x:.2f}} | Y: %{{y:.2f}}<extra></extra>"
             )
         ))
 
-    # 3. מדידה בין נקודות שנבחרו בסידבר
-    if m1 < len(drills) and m2 < len(drills):
-        p1, p2 = drills[m1], drills[m2]
-        dist = math.sqrt((p1['x']-p2['x'])**2 + (p1['y']-p2['y'])**2)
-        fig.add_trace(go.Scatter3d(
-            x=[p1['x'], p2['x']], y=[p1['y'], p2['y']], z=[thickness+5, thickness+5],
-            mode='lines+text', line=dict(color='lime', width=12),
-            text=["", f"📏 {dist:.2f} ממ"], textposition="top center"
-        ))
+    fig.update_xaxes(range=[-50, 2050], gridcolor='lightgray', title="X (מילימטר)")
+    fig.update_yaxes(range=[-50, 1550], scaleanchor="x", scaleratio=1, gridcolor='lightgray', title="Y (מילימטר)")
+    fig.update_layout(title="הדמיית CNC דו-ממדית - גרסה 38.0", width=1000, height=750, template="plotly_white")
+    st.plotly_chart(fig, use_container_width=True)
 
-    camera = dict(eye=dict(x=0, y=0, z=2.5), up=dict(x=0, y=1, z=0)) if top_view else dict(eye=dict(x=1.2, y=1.2, z=1.2))
-    fig.update_layout(scene=dict(camera=camera, aspectmode='data', 
-                                 xaxis=dict(range=[0, 2000]), yaxis=dict(range=[0, 1500])),
-                      margin=dict(l=0, r=0, b=0, t=0), height=850)
-    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-
-# UI
-st.sidebar.title("🛠️ CNC 37.7")
-v_2d = st.sidebar.toggle("מבט על (2D)", value=False)
+# UI Sidebar
+st.sidebar.title("🛠️ CNC 38.0 ממשק אבי")
 st.sidebar.markdown("---")
-n_v = st.sidebar.checkbox("צמד לפינה", value=True)
-r_v = st.sidebar.checkbox("Portrait", value=True)
-m_v = st.sidebar.number_input("Margin", value=7.0)
+nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
+rot = st.sidebar.checkbox("סובב 90 מעלות (Portrait)", value=True)
+mar = st.sidebar.number_input("Margin", value=7.0)
 
-st.sidebar.markdown("---")
-st.sidebar.header("📏 מדידה")
-drill_1 = st.sidebar.number_input("מקדח ראשון (#)", value=0, min_value=0)
-drill_2 = st.sidebar.number_input("מקדח שני (#)", value=1, min_value=0)
-
-uploaded = st.file_uploader("טען MPR", accept_multiple_files=True)
+uploaded = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
-        nc, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), r_v, n_v, m_v, 2.0)
-        plot_master_3d(drills, geos, thick, v_2d, drill_1, drill_2)
+        nc, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mar, 2.0)
+        plot_2d_clean(drills, geos, thick)
+        st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", nc, f.name.replace(".mpr", ".nc"))
