@@ -5,10 +5,9 @@ import math
 from collections import defaultdict
 from io import BytesIO
 
-# חייב להיות פקודה ראשונה
-st.set_page_config(page_title="Darwish CNC Pro 23.0", layout="wide")
+# חובה: פקודה ראשונה באפליקציה
+st.set_page_config(page_title="Darwish CNC Pro 24.0", layout="wide")
 
-# הגדרות כלים מקוריות של אבי
 DEFAULT_TOOLS = [
     {"ID_MPR": "142", "קוטר_ממ": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2"},
     {"ID_MPR": "158", "קוטר_ממ": 8.0, "תיאור": "כרסום 8", "T_CNC": "T3"},
@@ -18,61 +17,56 @@ DEFAULT_TOOLS = [
     {"ID_MPR": "135", "קוטר_ממ": 35.0, "תיאור": "מקדח 35", "T_CNC": "T6"}
 ]
 
+def safe_val(pattern, text, default=0.0, is_int=False):
+    match = re.search(pattern, text)
+    if not match: return 0 if is_int else default
+    return int(match.group(1)) if is_int else float(match.group(1))
+
 def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting, margin):
     id_map = {str(row['ID_MPR']): row['T_CNC'] for _, row in tool_df.iterrows()}
     dia_map = {float(row['קוטר_ממ']): row['T_CNC'] for _, row in tool_df.iterrows() if row['קוטר_ממ'] > 0}
-    
-    t_m = re.search(r't="([\d.]+)"', mpr_text)
-    thickness = float(t_m.group(1)) if t_m else 16.5
+    thickness = safe_val(r't="([\d.]+)"', mpr_text, 16.5)
     
     geometries = {}
-    parts = re.split(r'\](\d+)', mpr_text)
-    for i in range(1, len(parts), 2):
-        bid, content = parts[i], parts[i+1]
+    blocks = re.split(r'\](\d+)', mpr_text)
+    for i in range(1, len(blocks), 2):
+        bid, content = blocks[i], blocks[i+1]
         pts = []
         for elem in re.split(r'\$E\d+', content):
-            x_m = re.search(r'X=([\d.-]+)', elem)
-            y_m = re.search(r'Y=([\d.-]+)', elem)
-            if x_m and y_m: pts.append([float(x_m.group(1)), float(y_m.group(1))])
+            x, y = re.search(r'X=([\d.-]+)', elem), re.search(r'Y=([\d.-]+)', elem)
+            if x and y: pts.append([float(x.group(1)), float(y.group(1))])
         if pts: geometries[bid] = pts
 
     raw_drills, raw_millings = [], []
-    # סריקה יסודית של כל הקידוחים
-    for m in re.finditer(r'<102(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
-        b = m.group(1)
-        try:
-            xa = float(re.search(r'XA="([\d.-]+)"', b).group(1))
-            ya = float(re.search(r'YA="([\d.-]+)"', b).group(1))
-            ti = float(re.search(r'TI="([\d.-]+)"', b).group(1))
-            du = float(re.search(r'DU="([\d.-]+)"', b).group(1))
-            an = int(re.search(r'AN="(\d+)"', b).group(1)) if 'AN="' in b else 1
-            ab = float(re.search(r'AB="([\d.-]+)"', b).group(1)) if 'AB="' in b else 0
-            wi = float(re.search(r'WI="([\d.-]+)"', b).group(1)) if 'WI="' in b else 0
-            tno = re.search(r'TNO="(\d+)"', b).group(1) if 'TNO="' in b else ""
-            t_final = id_map.get(tno, dia_map.get(du, "T44"))
+    # פירוק הקובץ לפי פקודות < למניעת איבוד נתונים
+    sections = mpr_text.split('<')
+    for sec in sections:
+        if sec.startswith('102'): # קידוחים
+            xa, ya = safe_val(r'XA="([\d.-]+)"', sec), safe_val(r'YA="([\d.-]+)"', sec)
+            ti, du = safe_val(r'TI="([\d.-]+)"', sec), safe_val(r'DU="([\d.-]+)"', sec)
+            an, ab = safe_val(r'AN="(\d+)"', sec, 1, True), safe_val(r'AB="([\d.-]+)"', sec)
+            wi = safe_val(r'WI="([\d.-]+)"', sec)
+            tno_m = re.search(r'TNO="(\d+)"', sec)
+            t_final = id_map.get(tno_m.group(1) if tno_m else "", dia_map.get(du, "T44"))
             for i in range(an):
-                nx, ny = xa + i*ab*math.cos(math.radians(wi)), ya + i*ab*math.sin(math.radians(wi))
-                raw_drills.append({'x': nx, 'y': ny, 'z': thickness-ti, 't': t_final})
-        except: continue
-
-    # סריקה יסודית של כל הכרסומים
-    for m in re.finditer(r'<105(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
-        b = m.group(1)
-        try:
-            geo_match = re.search(r'EA="(\d+):', b)
+                nx = xa + i * ab * math.cos(math.radians(wi))
+                ny = ya + i * ab * math.sin(math.radians(wi))
+                raw_drills.append({'x': nx, 'y': ny, 'z': thickness - ti, 't': t_final})
+        
+        elif sec.startswith('105'): # כרסומים
+            geo_match = re.search(r'EA="(\d+):', sec)
             if geo_match:
                 eid = geo_match.group(1)
-                za = float(re.search(r'ZA="([\d.-]+)"', b).group(1))
-                tno = re.search(r'TNO="(\d+)"', b).group(1) if 'TNO="' in b else "142"
-                raw_millings.append({'geo_id': eid, 'z': za, 't': id_map.get(tno, "T2")})
-        except: continue
+                za = safe_val(r'ZA="([\d.-]+)"', sec)
+                tno_m = re.search(r'TNO="(\d+)"', sec)
+                raw_millings.append({'geo_id': eid, 'z': za, 't': id_map.get(tno_m.group(1) if tno_m else "142", "T2")})
 
-    # חישוב איפוס - רק לפי חלקים פעילים (מתעלם מבלוק 1)
-    active_x = [d['x'] for d in raw_drills] + [p[0] for bid, pts in geometries.items() if bid != "1" for p in pts]
-    active_y = [d['y'] for d in raw_drills] + [p[1] for bid, pts in geometries.items() if bid != "1" for p in pts]
+    # איפוס לפינה (התעלמות מגבולות לוח כלליים)
+    parts_x = [d['x'] for d in raw_drills] + [p[0] for bid, pts in geometries.items() if bid != "1" for p in pts]
+    parts_y = [d['y'] for d in raw_drills] + [p[1] for bid, pts in geometries.items() if bid != "1" for p in pts]
     
-    if active_x and active_y:
-        mx, my = min(active_x), min(active_y)
+    if parts_x and parts_y:
+        mx, my = min(parts_x), min(parts_y)
         for d in raw_drills:
             if zero_nesting: d['x'] -= mx; d['y'] -= my
             d['x'] += margin; d['y'] += margin
@@ -84,21 +78,57 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
                 if swap_axes: p[0], p[1] = p[1], p[0]
 
     nc, ln, last_t = [f"G90 {offset}"], 10, ""
-    # קידוחים
+    # יצירת NC לקידוחים
     for tool in sorted(list(set(d['t'] for d in raw_drills))):
-        for d in sorted([dr for dr in raw_drills if dr['t']==tool], key=lambda x: (x['x'], x['y'])):
+        for d in sorted([dr for dr in raw_drills if dr['t']==tool], key=lambda k: (k['x'], k['y'])):
             if d['t'] != last_t:
-                nc.extend([f"N{ln} {d['t']} M06", f"N{ln+5} G43 H{d['t'][1:]} S4000 M03"]); ln, last_t = ln+10, d['t']
-            nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F2000", f"N{ln+10} G00 Z{thickness+10:.3f}"]); ln+=15
-    # כרסומים
+                nc.append(f"N{ln} {d['t']} M06")
+                nc.append(f"N{ln+5} G43 H{d['t'][1:]} S4000 M03")
+                ln, last_t = ln + 10, d['t']
+            nc.append(f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}")
+            nc.append(f"N{ln+5} G01 Z{d['z']:.3f} F2000")
+            nc.append(f"N{ln+10} G00 Z{thickness+10:.3f}")
+            ln += 15
+    # יצירת NC לכרסומים
     for m in sorted(raw_millings, key=lambda x: x['t']):
         if m['t'] != last_t:
-            nc.extend([f"N{ln} {m['t']} M06", f"N{ln+5} G43 H{m['t'][1:]} S17000 M03"]); ln, last_t = ln+10, m['t']
+            nc.append(f"N{ln} {m['t']} M06")
+            nc.append(f"N{ln+5} G43 H{m['t'][1:]} S17000 M03")
+            ln, last_t = ln + 10, m['t']
         pts = geometries.get(m['geo_id'])
         if pts:
-            for zv in ([m['z']] if num_passes!=2 else [2.0, -0.2]):
-                nc.append(f"N{ln} G00 X{pts[0][0]:.3f} Y{pts[0][1]:.3f}"); ln+=5
-                nc.append(f"N{ln} G01 Z{zv:.3f} F3000"); ln+=5
-                for p in pts[1:]: nc.append(f"N{ln} G01 X{p[0]:.3f} Y{p[1]:.3f}"); ln+=5
-                nc.append(f"N{ln} G00 Z{thickness+10:.3f}"); ln+=5
-    nc.append(
+            z_levels = [m['z']] if num_passes != 2 else [2.0, -0.2]
+            for zv in z_levels:
+                nc.append(f"N{ln} G00 X{pts[0][0]:.3f} Y{pts[0][1]:.3f}")
+                nc.append(f"N{ln+5} G01 Z{zv:.3f} F3000")
+                ln += 10
+                for p in pts[1:]:
+                    nc.append(f"N{ln} G01 X{p[0]:.3f} Y{p[1]:.3f}")
+                    ln += 5
+                nc.append(f"N{ln} G00 Z{thickness+10:.3f}")
+                ln += 5
+    nc.append(f"N{ln} M30")
+    return "\n".join(nc)
+
+# --- Streamlit UI ---
+st.title("🪚 Darwish CNC Pro - גרסה 24.0")
+st.sidebar.header("🛠️ הגדרות")
+if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
+edited_df = st.sidebar.data_editor(st.session_state.tool_df, num_rows="dynamic")
+margin_val = st.sidebar.number_input("מרווח ביטחון (מ''מ)", value=7.0)
+
+col1, col2 = st.columns([1, 1])
+with col1:
+    swap = st.checkbox("החלף צירים (X ↔ Y)", value=True)
+    nest = st.checkbox("צמד לפינה", value=True)
+    off = st.selectbox("נקודת אפס", ["G54", "G55", "G56"])
+    mode = st.radio("שיטה:", ('לפי MPR', '2 פסיעות'))
+    uploaded = st.file_uploader("בחר קבצי MPR", accept_multiple_files=True)
+
+with col2:
+    if uploaded:
+        pv = 2 if '2 פסיעות' in mode else 0
+        for f in uploaded:
+            res = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, pv, swap, off, nest, margin_val)
+            st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", res, f.name.replace(".mpr", ".nc"))
+            st.code(res, language='gcode')
