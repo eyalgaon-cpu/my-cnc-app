@@ -1,6 +1,7 @@
 import streamlit as st
 import re, os, zipfile
 from collections import defaultdict
+from io import BytesIO
 
 # הגדרות כלים סופיות - אבי השכן
 AVI_LOGIC = {
@@ -16,40 +17,27 @@ AVI_LOGIC = {
 def convert_logic(mpr_text, tool_mapping, num_passes):
     t_match = re.search(r't="([\d.]+)"', mpr_text)
     thickness = float(t_match.group(1)) if t_match else 16.5
-    
     geometries = {}
-    # פיצול לפי בלוקי גיאומטריה ]1, ]2 וכו'
     blocks = re.split(r'\](\d+)', mpr_text)
     for i in range(1, len(blocks), 2):
-        block_id = blocks[i]
-        block_content = blocks[i+1]
+        block_id, block_content = blocks[i], blocks[i+1]
         pts = []
-        # פיצול פנימי לפי אלמנטים ($E0, $E1...) לטיפול בשורות נפרדות
         elements = re.split(r'\$E\d+', block_content)
         for elem in elements:
-            x_m = re.search(r'X=([\d.-]+)', elem)
-            y_m = re.search(r'Y=([\d.-]+)', elem)
-            if x_m and y_m:
-                pts.append((float(x_m.group(1)), float(y_m.group(1))))
+            x_m, y_m = re.search(r'X=([\d.-]+)', elem), re.search(r'Y=([\d.-]+)', elem)
+            if x_m and y_m: pts.append((float(x_m.group(1)), float(y_m.group(1))))
         geometries[block_id] = pts
 
-    drills_by_tool = defaultdict(list)
-    millings_by_tool = defaultdict(list)
-
-    # חילוץ קידוחים
+    drills_by_tool, millings_by_tool = defaultdict(list), defaultdict(list)
     drills = re.findall(r'<102.*?XA="([\d.]+)".*?YA="([\d.]+)".*?TI="([\d.]+)".*?(?:TNO="(\d+)")?.*?', mpr_text, re.DOTALL)
     for x, y, depth, tno in drills:
         tno = tno if tno else "121"
         drills_by_tool[tno].append({'x': float(x), 'y': float(y), 'depth': float(depth)})
-
-    # חילוץ כרסומים
     millings = re.findall(r'<105.*?EA="(\d+):.*?ZA="([\d.-]+)".*?TNO="(\d+)".*?', mpr_text, re.DOTALL)
     for geo_id, za, tno in millings:
         millings_by_tool[tno].append({'geo_id': geo_id, 'za': float(za)})
 
     nc_out, l_num, last_tool = [], 10, ""
-
-    # 1. שלב הקידוחים
     for tno in sorted(drills_by_tool.keys()):
         cnc_tool = tool_mapping.get(tno, {"cnc": "T44"})["cnc"]
         if cnc_tool != last_tool:
@@ -57,14 +45,8 @@ def convert_logic(mpr_text, tool_mapping, num_passes):
             l_num, last_tool = l_num + 20, cnc_tool
         for d in drills_by_tool[tno]:
             z_target = round(thickness - d['depth'], 3)
-            nc_out.extend([
-                f"N{l_num} G00 X{d['x']:.3f} Y{d['y']:.3f}",
-                f"N{l_num+10} G01 Z{z_target:.3f} F2000.0",
-                f"N{l_num+20} G00 Z{thickness + 10:.3f}"
-            ])
+            nc_out.extend([f"N{l_num} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{l_num+10} G01 Z{z_target:.3f} F2000.0", f"N{l_num+20} G00 Z{thickness + 10:.3f}"])
             l_num += 30
-
-    # 2. שלב הכרסומים
     for tno in sorted(millings_by_tool.keys()):
         cnc_tool = tool_mapping.get(tno, {"cnc": "T2"})["cnc"]
         if cnc_tool != last_tool:
@@ -88,17 +70,40 @@ def convert_logic(mpr_text, tool_mapping, num_passes):
     return "\n".join(nc_out)
 
 st.set_page_config(page_title="Darwish CNC Pro", page_icon="🪚")
-st.title("🪚 המרת MPR ל-NC - גרסה 8.0")
-mode = st.radio("בחר שיטת עבודה:", ('לפי MPR', '2 פסיעות (2.0 ומינוס 0.2)'))
+st.title("🪚 המרת MPR ל-NC - גרסה 9.0")
+
+# אזור ניהול פרויקט
+st.subheader("ארגון פרויקט")
+col1, col2 = st.columns(2)
+with col1:
+    project_name = st.text_input("שם הפרויקט", "פרויקט_חדש")
+with col2:
+    material_type = st.text_input("סוג חומר", "כללי")
+
+mode = st.radio("שיטת עבודה:", ('לפי MPR', '2 פסיעות (2.0 ומינוס 0.2)'))
 pass_val = 2 if '2 פסיעות' in mode else 0
+
 uploaded = st.file_uploader("העלה קבצי MPR", accept_multiple_files=True)
+
 if uploaded:
-    if st.button("בצע המרה (ZIP)", type="primary"):
-        zip_path = 'CNC_KITCHEN_FILES.zip'
-        with zipfile.ZipFile(zip_path, 'w') as zip_f:
-            for file in uploaded:
-                content = file.read().decode('utf-8', errors='ignore')
-                res = convert_logic(content, AVI_LOGIC, pass_val)
-                zip_f.writestr(file.name.replace(".mpr", ".nc"), res)
-        with open(zip_path, "rb") as f:
-            st.download_button("📂 הורד ZIP מעודכן", f, zip_path)
+    if len(uploaded) == 1:
+        # טיפול בקובץ בודד - הורדה ישירה
+        file = uploaded[0]
+        content = file.read().decode('utf-8', errors='ignore')
+        nc_content = convert_logic(content, AVI_LOGIC, pass_val)
+        nc_name = file.name.replace(".mpr", ".nc")
+        st.download_button(f"📂 הורד קובץ {nc_name}", nc_content, nc_name, "text/plain")
+    
+    else:
+        # טיפול בכמה קבצים - ZIP עם מבנה תיקיות
+        if st.button("ארוז פרויקט ל-ZIP", type="primary"):
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w') as zip_f:
+                for file in uploaded:
+                    content = file.read().decode('utf-8', errors='ignore')
+                    res = convert_logic(content, AVI_LOGIC, pass_val)
+                    # יצירת נתיב בתוך ה-ZIP: שם פרויקט / חומר / קובץ
+                    path_in_zip = f"{project_name}/{material_type}/{file.name.replace('.mpr', '.nc')}"
+                    zip_f.writestr(path_in_zip, res)
+            
+            st.download_button("📂 הורד ZIP פרויקט מסודר", zip_buffer.getvalue(), f"{project_name}.zip")
