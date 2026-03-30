@@ -3,9 +3,8 @@ import re, os
 import pandas as pd
 import math
 import plotly.graph_objects as go
-import numpy as np
 
-st.set_page_config(page_title="Darwish CNC Pro 37.5", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 37.6", layout="wide")
 
 # ניהול זיכרון מדידה
 if 'measure_pts' not in st.session_state:
@@ -96,11 +95,11 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
 def plot_master_3d(drills, geos, thickness, top_view):
     fig = go.Figure()
     
-    # 1. שולחן המכונה
+    # 1. שולחן המכונה (רקע קבוע)
     fig.add_trace(go.Mesh3d(
         x=[0, 0, 2000, 2000, 0, 0, 2000, 2000], y=[0, 1500, 1500, 0, 0, 1500, 1500, 0],
         z=[-1, -1, -1, -1, 0, 0, 0, 0],
-        opacity=0.05, color='gray', hoverinfo='skip', name='שולחן'
+        opacity=0.03, color='gray', hoverinfo='skip', name='שולחן המכונה'
     ))
 
     # 2. הפלטה
@@ -113,10 +112,10 @@ def plot_master_3d(drills, geos, thickness, top_view):
             x=[min_x, min_x, max_x, max_x, min_x, min_x, max_x, max_x],
             y=[min_y, max_y, max_y, min_y, min_y, max_y, max_y, min_y],
             z=[0, 0, 0, 0, thickness, thickness, thickness, thickness],
-            opacity=0.1, color='burlywood', hoverinfo='skip', name='חלק'
+            opacity=0.1, color='burlywood', hoverinfo='skip'
         ))
 
-    # 3. קידוחים עם HOVER משופר
+    # 3. קידוחים עם HOVER מעודכן
     for i, d in enumerate(drills):
         actual_depth = thickness - d['z']
         fig.add_trace(go.Scatter3d(
@@ -125,19 +124,19 @@ def plot_master_3d(drills, geos, thickness, top_view):
             marker=dict(size=[d['dia']*1.5, 0], color=d['color']),
             line=dict(color=d['color'], width=7),
             customdata=[i],
-            name=f"#{i}: {d['desc']}",
+            name=f"{d['desc']}",
             hovertemplate=(
-                f"<b>קידוח #{i}</b><br>"
+                f"<b>{d['desc']}</b><br>"
                 f"מספר כלי: {d['t']}<br>"
-                f"תיאור כלי: {d['desc']}<br>"
-                f"X: %{{x:.2f}}<br>Y: %{{y:.2f}}<br>"
-                f"עומק בפועל: {actual_depth:.2f} ממ<extra></extra>"
+                f"עומק בפועל: {actual_depth:.2f} ממ<br>"
+                f"X: %{{x:.2f}} | Y: %{{y:.2f}}<extra></extra>"
             )
         ))
 
     # 4. סרגל מדידה
     if len(st.session_state.measure_pts) >= 2:
-        p1, p2 = drills[st.session_state.measure_pts[-2]], drills[st.session_state.measure_pts[-1]]
+        p1 = drills[st.session_state.measure_pts[-2]]
+        p2 = drills[st.session_state.measure_pts[-1]]
         dist = math.sqrt((p1['x']-p2['x'])**2 + (p1['y']-p2['y'])**2)
         fig.add_trace(go.Scatter3d(
             x=[p1['x'], p2['x']], y=[p1['y'], p2['y']], z=[thickness+5, thickness+5],
@@ -152,15 +151,17 @@ def plot_master_3d(drills, geos, thickness, top_view):
         margin=dict(l=0, r=0, b=0, t=0), height=850
     )
 
+    # הפעלת אירוע לחיצה לבחירת נקודות למדידה
     ev = st.plotly_chart(fig, use_container_width=True, on_select="rerun", config={'scrollZoom': True})
+    
     if ev and "selection" in ev and ev["selection"]["points"]:
-        new_idx = ev["selection"]["points"][0]["customdata"][0]
+        new_idx = ev["selection"]["points"][0]["point_number"]
         if not st.session_state.measure_pts or st.session_state.measure_pts[-1] != new_idx:
             st.session_state.measure_pts.append(new_idx)
             st.rerun()
 
 # Sidebar
-st.sidebar.title("🛠️ CNC 37.5 ממשק אבי")
+st.sidebar.title("🛠️ CNC 37.6 ממשק אבי")
 view_2d = st.sidebar.toggle("(2D) מבט על", value=False)
 st.sidebar.markdown("---")
 nest = st.sidebar.checkbox("(Nesting) צמד לפינה", value=True)
