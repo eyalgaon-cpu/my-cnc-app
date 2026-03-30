@@ -5,49 +5,26 @@ import math
 from collections import defaultdict
 from io import BytesIO
 
-st.set_page_config(page_title="Darwish CNC Pro 27.0", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 28.0", layout="wide")
 
-# פרופילי מכונות עם הגדרות מהירות
-MACHINE_PROFILES = {
-    "המכונה של אבי": {
-        "z_offset": 2.0,
-        "margin": 7.0,
-        "drill_s": 4000,
-        "drill_f": 2000,
-        "mill_s": 18000,
-        "mill_f": 6000, # העליתי ל-6000 כברירת מחדל לאבי
-        "offset": "G54"
-    },
-    "מכונה כללית": {
-        "z_offset": 0.0,
-        "margin": 0.0,
-        "drill_s": 4000,
-        "drill_f": 2000,
-        "mill_s": 17000,
-        "mill_f": 3000,
-        "offset": "G54"
-    }
-}
-
+# פרופיל אבי - ברירות מחדל בטעינה ראשונה
 DEFAULT_TOOLS = [
-    {"ID_MPR": "142", "קוטר_ממ": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2"},
-    {"ID_MPR": "158", "קוטר_ממ": 8.0, "תיאור": "כרסום 8", "T_CNC": "T3"},
-    {"ID_MPR": "121", "קוטר_ממ": 5.0, "תיאור": "מקדח 5", "T_CNC": "T44"},
-    {"ID_MPR": "149", "קוטר_ממ": 15.0, "תיאור": "מקדח 15", "T_CNC": "T49"},
-    {"ID_MPR": "135", "קוטר_ממ": 35.0, "תיאור": "מקדח 35", "T_CNC": "T6"}
+    {"ID_MPR": "142", "תיאור": "כרסום 6", "T_CNC": "T2", "S_סלד": 18000, "F_התקדמות": 6000},
+    {"ID_MPR": "158", "תיאור": "כרסום 8", "T_CNC": "T3", "S_סלד": 16000, "F_התקדמות": 8000},
+    {"ID_MPR": "140", "תיאור": "כרסום 3", "T_CNC": "T11", "S_סלד": 18000, "F_התקדמות": 3000},
+    {"ID_MPR": "121", "תיאור": "מקדח 5", "T_CNC": "T44", "S_סלד": 4000, "F_התקדמות": 2000},
+    {"ID_MPR": "149", "תיאור": "מקדח 15", "T_CNC": "T49", "S_סלד": 4000, "F_התקדמות": 2000},
+    {"ID_MPR": "135", "תיאור": "מקדח 35", "T_CNC": "T6", "S_סלד": 3000, "F_התקדמות": 1500}
 ]
 
-def safe_val(pattern, text, default=0.0, is_int=False):
-    match = re.search(pattern, text)
-    if not match: return 0 if is_int else default
-    return int(match.group(1)) if is_int else float(match.group(1))
-
-def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting, margin, z_offset, drill_s, drill_f, mill_s, mill_f):
-    id_map = {str(row['ID_MPR']): row['T_CNC'] for _, row in tool_df.iterrows()}
-    dia_map = {float(row['קוטר_ממ']): row['T_CNC'] for _, row in tool_df.iterrows() if row['קוטר_ממ'] > 0}
-    thickness = safe_val(r't="([\d.]+)"', mpr_text, 16.5)
+def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting, margin, z_offset):
+    # יצירת מילון מהירות ו-T לפי ID_MPR
+    tool_config = tool_df.set_index('ID_MPR').to_dict('index')
     
-    geometries = {}
+    t_m = re.search(r't="([\d.]+)"', mpr_text)
+    thickness = float(t_m.group(1)) if t_m else 16.5
+    
+    geos = {}
     parts = re.split(r'\](\d+)', mpr_text)
     for i in range(1, len(parts), 2):
         bid, content = parts[i], parts[i+1]
@@ -55,104 +32,92 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
         for elem in re.split(r'\$E\d+', content):
             x, y = re.search(r'X=([\d.-]+)', elem), re.search(r'Y=([\d.-]+)', elem)
             if x and y: pts.append([float(x.group(1)), float(y.group(1))])
-        if pts: geometries[bid] = pts
+        if pts: geos[bid] = pts
 
     raw_drills, raw_millings = [], []
     sections = mpr_text.split('<')
     for idx, sec in enumerate(sections):
         if sec.startswith('102'):
-            xa, ya = safe_val(r'XA="([\d.-]+)"', sec), safe_val(r'YA="([\d.-]+)"', sec)
-            ti, du = safe_val(r'TI="([\d.-]+)"', sec), safe_val(r'DU="([\d.-]+)"', sec)
-            an, ab = safe_val(r'AN="(\d+)"', sec, 1, True), safe_val(r'AB="([\d.-]+)"', sec)
-            wi = safe_val(r'WI="([\d.-]+)"', sec)
-            tno_m = re.search(r'TNO="(\d+)"', sec)
-            t_final = id_map.get(tno_m.group(1) if tno_m else "", dia_map.get(du, "T44"))
+            xa, ya = [float(re.search(f'{k}="([\\d.-]+)"', sec).group(1)) for k in ['XA', 'YA']]
+            ti, du = [float(re.search(f'{k}="([\\d.-]+)"', sec).group(1)) for k in ['TI', 'DU']]
+            an = int(re.search(r'AN="(\d+)"', sec).group(1)) if 'AN="' in sec else 1
+            ab = float(re.search(r'AB="([\d.-]+)"', sec).group(1)) if 'AB="' in sec else 0
+            wi = float(re.search(r'WI="([\d.-]+)"', sec).group(1)) if 'WI="' in sec else 0
+            tno = re.search(r'TNO="(\d+)"', sec).group(1) if 'TNO="' in sec else ""
+            
+            conf = tool_config.get(tno, {"T_CNC": "T44", "S_סלד": 4000, "F_התקדמות": 2000})
             for i in range(an):
-                nx = xa + i * ab * math.cos(math.radians(wi))
-                ny = ya + i * ab * math.sin(math.radians(wi))
-                raw_drills.append({'x': nx, 'y': ny, 'z': (thickness - ti) - z_offset, 't': t_final, 'group': idx})
+                nx, ny = xa + i*ab*math.cos(math.radians(wi)), ya + i*ab*math.sin(math.radians(wi))
+                raw_drills.append({'x': nx, 'y': ny, 'z': (thickness-ti)-z_offset, 't': conf['T_CNC'], 's': conf['S_סלד'], 'f': conf['F_התקדמות'], 'group': idx})
+
         elif sec.startswith('105'):
-            geo_match = re.search(r'EA="(\d+):', sec)
-            if geo_match:
-                eid = geo_match.group(1)
-                za = safe_val(r'ZA="([\d.-]+)"', sec)
-                tno_m = re.search(r'TNO="(\d+)"', sec)
-                raw_millings.append({'geo_id': eid, 'z': za - z_offset, 't': id_map.get(tno_m.group(1) if tno_m else "142", "T2")})
+            gid = re.search(r'EA="(\d+):', sec).group(1)
+            za = float(re.search(r'ZA="([\d.-]+)"', sec).group(1))
+            tno = re.search(r'TNO="(\d+)"', sec).group(1) if 'TNO="' in sec else "142"
+            conf = tool_config.get(tno, {"T_CNC": "T2", "S_סלד": 18000, "F_התקדמות": 6000})
+            raw_millings.append({'geo_id': gid, 'z': za - z_offset, 't': conf['T_CNC'], 's': conf['S_סלד'], 'f': conf['F_התקדמות']})
 
     # Nesting
-    parts_x = [d['x'] for d in raw_drills] + [p[0] for bid, pts in geometries.items() if bid != "1" for p in pts]
-    parts_y = [d['y'] for d in raw_drills] + [p[1] for bid, pts in geometries.items() if bid != "1" for p in pts]
-    if parts_x and parts_y:
-        mx, my = min(parts_x), min(parts_y)
+    active_x = [d['x'] for d in raw_drills] + [p[0] for bid, pts in geos.items() if bid != "1" for p in pts]
+    active_y = [d['y'] for d in raw_drills] + [p[1] for bid, pts in geometries.items() if bid != "1" for p in pts]
+    if active_x and active_y:
+        mx, my = min(active_x), min(active_y)
         for d in raw_drills:
             if zero_nesting: d['x'] -= mx; d['y'] -= my
             d['x'] += margin; d['y'] += margin
             if swap_axes: d['x'], d['y'] = d['y'], d['x']
-        for bid, pts in geometries.items():
+        for bid, pts in geos.items():
             for p in pts:
                 if zero_nesting and bid != "1": p[0] -= mx; p[1] -= my
                 p[0] += margin; p[1] += margin
                 if swap_axes: p[0], p[1] = p[1], p[0]
 
     nc, ln, last_t = [f"G90 {offset}"], 10, ""
-    # קידוחים
-    for tool in sorted(list(set(d['t'] for d in raw_drills))):
-        drills_for_tool = sorted([dr for dr in raw_drills if dr['t']==tool], key=lambda k: (k['group'], k['x'], k['y']))
-        for d in drills_for_tool:
+    # יצירת קוד לפי כלי ומהירותו
+    for tool_name in sorted(list(set(d['t'] for d in raw_drills))):
+        subset = sorted([dr for dr in raw_drills if dr['t']==tool_name], key=lambda k: (k['group'], k['x']))
+        for d in subset:
             if d['t'] != last_t:
-                nc.extend([f"N{ln} {d['t']} M06", f"N{ln+5} G43 H{d['t'][1:]} S{int(drill_s)} M03"]); ln, last_t = ln + 10, d['t']
-            nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F{int(drill_f)}", f"N{ln+10} G00 Z{thickness+10:.3f}"]); ln += 15
-    # כרסומים
+                nc.extend([f"N{ln} {d['t']} M06", f"N{ln+5} G43 H{d['t'][1:]} S{int(d['s'])} M03"]); ln, last_t = ln+10, d['t']
+            nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F{int(d['f'])}", f"N{ln+10} G00 Z{thickness+10:.3f}"]); ln+=15
+
     for m in sorted(raw_millings, key=lambda x: x['t']):
         if m['t'] != last_t:
-            nc.extend([f"N{ln} {m['t']} M06", f"N{ln+5} G43 H{m['t'][1:]} S{int(mill_s)} M03"]); ln, last_t = ln + 10, m['t']
-        pts = geometries.get(m['geo_id'])
+            nc.extend([f"N{ln} {m['t']} M06", f"N{ln+5} G43 H{m['t'][1:]} S{int(m['s'])} M03"]); ln, last_t = ln+10, m['t']
+        pts = geos.get(m['geo_id'])
         if pts:
-            z_levels = [m['z']] if num_passes != 2 else [2.0 - z_offset, -0.2 - z_offset]
-            for zv in z_levels:
+            for zv in ([m['z']] if num_passes!=2 else [2.0-z_offset, -0.2-z_offset]):
                 nc.append(f"N{ln} G00 X{pts[0][0]:.3f} Y{pts[0][1]:.3f}")
-                nc.append(f"N{ln+5} G01 Z{zv:.3f} F{int(mill_f)}")
-                ln += 10
-                for p in pts[1:]: nc.append(f"N{ln} G01 X{p[0]:.3f} Y{p[1]:.3f}"); ln += 5
-                nc.append(f"N{ln} G00 Z{thickness+10:.3f}"); ln += 5
+                nc.append(f"N{ln+5} G01 Z{zv:.3f} F{int(m['f'])}")
+                ln+=10
+                for p in pts[1:]: nc.append(f"N{ln} G01 X{p[0]:.3f} Y{p[1]:.3f}"); ln+=5
+                nc.append(f"N{ln} G00 Z{thickness+10:.3f}"); ln+=5
     nc.append(f"N{ln} M30")
     return "\n".join(nc)
 
 # UI
-st.title("🪚 Darwish CNC Pro - גרסה 27.0")
-st.sidebar.header("🔌 בחר מכונה")
-selected_machine = st.sidebar.selectbox("מכונה:", list(MACHINE_PROFILES.keys()))
-profile = MACHINE_PROFILES[selected_machine]
-
-st.sidebar.markdown("---")
-st.sidebar.header("🛠️ ניהול כלים")
+st.title("🪚 Darwish CNC Pro - גרסה 28.0")
+st.sidebar.header("🛠️ טבלת כלים ומהירויות")
 if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
 edited_df = st.sidebar.data_editor(st.session_state.tool_df, num_rows="dynamic")
 
 st.sidebar.markdown("---")
-st.sidebar.header("🚀 מהירויות עבודה")
-s_mill = st.sidebar.number_input("סל\"ד כרסום (S)", value=float(profile["mill_s"]))
-f_mill = st.sidebar.number_input("התקדמות כרסום (F)", value=float(profile["mill_f"]))
-s_drill = st.sidebar.number_input("סל\"ד קידוח (S)", value=float(profile["drill_s"]))
-f_drill = st.sidebar.number_input("התקדמות קידוח (F)", value=float(profile["drill_f"]))
-
-st.sidebar.markdown("---")
-st.sidebar.header("📏 Fine Tuning")
-z_off = st.sidebar.number_input("תוספת עומק (מילימטר)", value=profile["z_offset"])
-mar = st.sidebar.number_input("מרווח ביטחון (מילימטר)", value=profile["margin"])
+st.sidebar.header("📏 כיול (המכונה של אבי)")
+z_off = st.sidebar.number_input("תוספת עומק (מילימטר)", value=2.0)
+mar = st.sidebar.number_input("מרווח ביטחון (מילימטר)", value=7.0)
 
 col1, col2 = st.columns([1, 1])
 with col1:
     swap = st.checkbox("החלף צירים (X ↔ Y)", value=True)
     nest = st.checkbox("צמד לפינה", value=True)
-    off = st.selectbox("נקודת אפס", ["G54", "G55", "G56"], index=0 if profile["offset"]=="G54" else 1)
+    off = st.selectbox("נקודת אפס", ["G54", "G55"])
     mode = st.radio("שיטה:", ('לפי MPR', '2 פסיעות'))
-    uploaded = st.file_uploader("בחר קבצי MPR", accept_multiple_files=True)
+    uploaded = st.file_uploader("בחר MPR", accept_multiple_files=True)
 
 with col2:
     if uploaded:
         pv = 2 if '2 פסיעות' in mode else 0
         for f in uploaded:
-            res = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, pv, swap, off, nest, mar, z_off, s_drill, f_drill, s_mill, f_mill)
+            res = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, pv, swap, off, nest, mar, z_off)
             st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", res, f.name.replace(".mpr", ".nc"))
             st.code(res, language='gcode')
