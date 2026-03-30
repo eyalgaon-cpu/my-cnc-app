@@ -3,12 +3,13 @@ import re, os
 import pandas as pd
 import math
 import plotly.graph_objects as go
+import numpy as np
 
-st.set_page_config(page_title="Darwish CNC Pro 37.3 - Pro UX", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 37.4 - Final CAD", layout="wide")
 
-# ניהול מצב בחירה למדידה
-if 'measure_points' not in st.session_state:
-    st.session_state.measure_points = []
+# ניהול מצב מדידה בזיכרון
+if 'measure_pts' not in st.session_state:
+    st.session_state.measure_pts = []
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -52,8 +53,9 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
         f_z = (thickness - ti) - global_z_off - conf.get("תיקון_Z", 0.0)
         for i in range(an):
             raw_drills.append({'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
-                               'z': f_z, 't': conf['T_CNC'], 'dia': du, 'color': conf['צבע']})
+                               'z': f_z, 't': conf['T_CNC'], 'dia': du, 'color': conf['צבע'], 'group': m.start()})
 
+    # סיבוב 90 מעלות CCW
     if rotate_90:
         for d in raw_drills:
             old_x, old_y = d['x'], d['y']
@@ -63,6 +65,7 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
                 old_x, old_y = p[0], p[1]
                 p[0], p[1] = width_original - old_y, old_x
 
+    # הצמדה לפינה (Nesting)
     if zero_nesting:
         inner_geos = {k: v for k, v in geos.items() if k != "1"}
         ref_x = [p[0] for pts in inner_geos.values() for p in pts] if inner_geos else [d['x'] for d in raw_drills]
@@ -76,12 +79,31 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
             for pts in geos.values():
                 for p in pts: p[0] += margin; p[1] += margin
 
-    return raw_drills, geos, thickness
+    nc, ln, last_t = [f"G90 G54"], 10, ""
+    for t_name in sorted(list(set(d['t'] for d in raw_drills))):
+        subset = sorted([dr for dr in raw_drills if dr['t']==t_name], key=lambda k: (k['group'], k['x']))
+        for d in subset:
+            if d['t'] != last_t:
+                nc.extend([f"N{ln} {d['t']} M06", f"N{ln+5} G43 H{d['t'][1:]} S4000 M03"])
+                ln, last_t = ln + 10, d['t']
+            nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F2000", f"N{ln+10} G00 Z{thickness+10:.3f}"])
+            ln += 15
+            
+    return "\n".join(nc), raw_drills, geos, thickness
 
-def plot_3d_pro(drills, geos, thickness, top_view=False):
+def plot_master_3d(drills, geos, thickness, top_view):
     fig = go.Figure()
     
-    # פלטה שקופה
+    # 1. שולחן המכונה (קבוע ב-0,0)
+    fig.add_trace(go.Mesh3d(
+        x=[0, 0, 2000, 2000, 0, 0, 2000, 2000],
+        y=[0, 1500, 1500, 0, 0, 1500, 1500, 0],
+        z=[-1, -1, -1, -1, 0, 0, 0, 0],
+        i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2], j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3], k=[0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
+        opacity=0.05, color='gray', hoverinfo='skip', name='שולחן'
+    ))
+
+    # 2. פלטה
     inner_geos = {k: v for k, v in geos.items() if k != "1"}
     if inner_geos:
         all_x = [p[0] for pts in inner_geos.values() for p in pts]
@@ -92,70 +114,62 @@ def plot_3d_pro(drills, geos, thickness, top_view=False):
             y=[min_y, max_y, max_y, min_y, min_y, max_y, max_y, min_y],
             z=[0, 0, 0, 0, thickness, thickness, thickness, thickness],
             i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2], j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3], k=[0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
-            opacity=0.05, color='gray', hoverinfo='skip'
+            opacity=0.1, color='burlywood', hoverinfo='skip', name='חלק'
         ))
 
-    # קדחים
-    fig.add_trace(go.Scatter3d(
-        x=[d['x'] for d in drills], y=[d['y'] for d in drills], z=[thickness for d in drills],
-        mode='markers',
-        marker=dict(size=[d['dia']*1.2 for d in drills], color=[d['color'] for d in drills], opacity=0.9),
-        text=[f"כלי: {d['t']} | קוטר: {d['dia']}" for d in drills],
-        hoverinfo='text', name="קידוחים"
-    ))
+    # 3. קידוחים
+    for i, d in enumerate(drills):
+        actual_depth = thickness - d['z']
+        fig.add_trace(go.Scatter3d(
+            x=[d['x'], d['x']], y=[d['y'], d['y']], z=[thickness, d['z']],
+            mode='lines+markers',
+            marker=dict(size=[d['dia']*1.5, 0], color=d['color']),
+            line=dict(color=d['color'], width=7),
+            customdata=[i],
+            name=f"#{i}: D{d['dia']}",
+            hovertemplate=f"<b>קידוח #{i}</b><br>כלי: {d['t']}<br>X: %{{x:.2f}}<br>Y: %{{y:.2f}}<br>עומק בפועל: {actual_depth:.2f} ממ<extra></extra>"
+        ))
 
-    # קו מדידה
-    if len(st.session_state.measure_points) >= 2:
-        p1 = drills[st.session_state.measure_points[-2]]
-        p2 = drills[st.session_state.measure_points[-1]]
+    # 4. קו מדידה
+    if len(st.session_state.measure_pts) >= 2:
+        idx1, idx2 = st.session_state.measure_pts[-2], st.session_state.measure_pts[-1]
+        p1, p2 = drills[idx1], drills[idx2]
         dist = math.sqrt((p1['x']-p2['x'])**2 + (p1['y']-p2['y'])**2)
         fig.add_trace(go.Scatter3d(
             x=[p1['x'], p2['x']], y=[p1['y'], p2['y']], z=[thickness+5, thickness+5],
-            mode='lines+text', line=dict(color='lime', width=8),
+            mode='lines+text', line=dict(color='lime', width=12),
             text=["", f"📏 {dist:.2f} ממ"], textposition="top center"
         ))
 
-    # הגדרות מצלמה ובקרה
-    camera = dict(eye=dict(x=0, y=0, z=2.5), up=dict(x=0, y=1, z=0)) if top_view else dict(eye=dict(x=1.5, y=1.5, z=1.2))
-    
+    camera = dict(eye=dict(x=0, y=0, z=2.5), up=dict(x=0, y=1, z=0)) if top_view else dict(eye=dict(x=1.2, y=1.2, z=1.2))
     fig.update_layout(
-        scene=dict(
-            camera=camera, xaxis_title='X', yaxis_title='Y', zaxis_title='Z',
-            aspectmode='data', dragmode='orbit' if not top_view else 'pan'
-        ),
-        margin=dict(l=0, r=0, b=0, t=30), height=800,
-        clickmode='event+select'
+        scene=dict(camera=camera, aspectmode='data', dragmode='orbit' if not top_view else 'pan', 
+                   xaxis=dict(range=[0, 2000]), yaxis=dict(range=[0, 1500])),
+        margin=dict(l=0, r=0, b=0, t=0), height=850
     )
 
-    selected = st.plotly_chart(fig, use_container_width=True, on_select="rerun", config={'scrollZoom': True, 'displayModeBar': True})
-    
-    if selected and "selection" in selected and "points" in selected["selection"]:
-        pts = selected["selection"]["points"]
-        if pts:
-            new_idx = pts[0]["point_number"]
-            if not st.session_state.measure_points or st.session_state.measure_points[-1] != new_idx:
-                st.session_state.measure_points.append(new_idx)
-                st.rerun()
+    ev = st.plotly_chart(fig, use_container_width=True, on_select="rerun", config={'scrollZoom': True})
+    if ev and "selection" in ev and ev["selection"]["points"]:
+        new_idx = ev["selection"]["points"][0]["customdata"][0]
+        if not st.session_state.measure_pts or st.session_state.measure_pts[-1] != new_idx:
+            st.session_state.measure_pts.append(new_idx)
+            st.rerun()
 
-# Sidebar
-st.sidebar.title("🎮 ממשק בקרה")
-view_2d = st.sidebar.toggle("מבט על (Top View)", value=False)
+# UI Sidebar
+st.sidebar.title("🛠️ ממשק אבי CNC 37.4")
+view_2d = st.sidebar.toggle("מבט על (2D)", value=False)
 st.sidebar.markdown("---")
 nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
 rot = st.sidebar.checkbox("סובב 90 מעלות (Portrait)", value=True)
 mar = st.sidebar.number_input("Margin", value=7.0)
 st.sidebar.markdown("---")
 if st.sidebar.button("נקה מדידות"):
-    st.session_state.measure_points = []
+    st.session_state.measure_pts = []
     st.rerun()
 
-# תוצאות מדידה
-if len(st.session_state.measure_points) >= 2:
-    st.sidebar.info("נתוני מדידה:")
-    # חישוב יתבצע כאן מול drills בעיבוד הקובץ
-
-uploaded = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
+uploaded = st.file_uploader("טען MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
-        drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mar, 2.0)
-        plot_3d_pro(drills, geos, thick, top_view=view_2d)
+        nc, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mar, 2.0)
+        plot_master_3d(drills, geos, thick, view_2d)
+        st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", nc, f.name.replace(".mpr", ".nc"))
