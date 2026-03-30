@@ -4,7 +4,8 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Darwish CNC Pro 36.3", layout="wide")
+# הגדרות דף חובה
+st.set_page_config(page_title="Darwish CNC Pro 36.4", layout="wide")
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -44,10 +45,13 @@ def convert_logic(mpr_text, tool_df, swap_axes, offset, zero_nesting, margin, gl
         an, ab, wi = int(get_safe_float('AN', b, 1)), get_safe_float('AB', b), get_safe_float('WI', b)
         conf = dia_map.get(round(du, 1))
         if conf is None: continue
+        
         f_z = (thickness - ti) - global_z_off - conf.get("תיקון_Z", 0.0)
         for i in range(an):
-            raw_drills.append({'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
-                               'z': f_z, 't': conf['T_CNC'], 's': conf['S'], 'f': conf['F'], 'dia': du, 'color': conf['צבע'], 'group': m.start()})
+            raw_drills.append({
+                'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
+                'z': f_z, 't': conf['T_CNC'], 's': conf['S'], 'f': conf['F'], 'dia': du, 'color': conf['צבע'], 'group': m.start()
+            })
 
     for m in re.finditer(r'<105(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         b = m.group(1)
@@ -57,8 +61,8 @@ def convert_logic(mpr_text, tool_df, swap_axes, offset, zero_nesting, margin, gl
             conf = dia_map.get(6.0, {"T_CNC": "T2", "צבע": "red", "S": 18000, "F": 6000})
             raw_millings.append({'geo_id': eid, 'z': za - global_z_off, 't': conf['T_CNC'], 'color': conf['צבע'], 's': conf['S'], 'f': conf['F']})
 
+    # Nesting חכם: מתעלם מפקודה 1 (הלוח הגולמי) כדי להצמיד רק את החלקים
     if zero_nesting:
-        # התעלמות מ-Milling 1 (הלוח) לצורך חישוב ההצמדה
         inner_geos = {k: v for k, v in geos.items() if k != "1"}
         ref_x = [p[0] for pts in inner_geos.values() for p in pts] if inner_geos else [d['x'] for d in raw_drills]
         ref_y = [p[1] for pts in inner_geos.values() for p in pts] if inner_geos else [d['y'] for d in raw_drills]
@@ -77,7 +81,8 @@ def convert_logic(mpr_text, tool_df, swap_axes, offset, zero_nesting, margin, gl
             if swap_axes: p[0], p[1] = p[1], p[0]
 
     nc, ln, last_t = [f"G90 {offset}"], 10, ""
-    for t_name in sorted(list(set(d['t'] for d in raw_drills))):
+    active_tools = sorted(list(set(d['t'] for d in raw_drills)))
+    for t_name in active_tools:
         subset = sorted([dr for dr in raw_drills if dr['t']==t_name], key=lambda k: (k['group'], k['x']))
         for d in subset:
             if d['t'] != last_t:
@@ -85,7 +90,54 @@ def convert_logic(mpr_text, tool_df, swap_axes, offset, zero_nesting, margin, gl
                 ln, last_t = ln + 10, d['t']
             nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F{int(d['f'])}", f"N{ln+10} G00 Z{thickness+10:.3f}"])
             ln += 15
-    # ... (המשך כרסומים וסיום)
+            
+    for m in raw_millings:
+        if m['t'] != last_t:
+            nc.extend([f"N{ln} {m['t']} M06", f"N{ln+5} G43 H{m['t'][1:]} S{int(m['s'])} M03"])
+            ln, last_t = ln + 10, m['t']
+        pts = geos.get(m['geo_id'])
+        if pts:
+            for zv in [m['z']-0.25, m['z']]:
+                nc.append(f"N{ln} G00 X{pts[0][0]:.3f} Y{pts[0][1]:.3f}")
+                nc.append(f"N{ln+5} G01 Z{zv:.3f} F{int(m['f'])}")
+                ln+=10
+                for p in pts[1:]: nc.append(f"N{ln} G01 X{p[0]:.3f} Y{p[1]:.3f}"); ln+=5
+                nc.append(f"N{ln} G00 Z{thickness+10:.3f}"); ln+=5
+    nc.append(f"N{ln} M30")
     return "\n".join(nc), raw_drills, geos
 
-# UI וגרפיקה נשארים זהים לגרסה 36.2
+def plot_preview(drills, geos):
+    fig = go.Figure()
+    all_x, all_y = [], []
+    for bid, pts in geos.items():
+        if len(pts) > 1:
+            x_p, y_p = zip(*pts)
+            all_x.extend(x_p); all_y.extend(y_p)
+            fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', name=f'Milling {bid}', line=dict(color='red', width=2)))
+    for d in drills:
+        all_x.append(d['x']); all_y.append(d['y'])
+        fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers', marker=dict(size=d['dia'], color=d['color'], line=dict(width=1, color='black')), name=f"{d['t']} (D{d['dia']})", hovertemplate=f"X:%{{x}}<br>Y:%{{y}}<br>Z:{d['z']:.2f}"))
+    if all_x and all_y:
+        pad = 50
+        fig.update_xaxes(range=[min(all_x)-pad, max(all_x)+pad])
+        fig.update_yaxes(range=[min(all_y)-pad, max(all_y)+pad], scaleanchor="x", scaleratio=1)
+    fig.update_layout(title="תצוגה מקדימה - אבי CNC (פרופורציה 1:1)", xaxis_title="X (מילימטר)", yaxis_title="Y (מילימטר)", width=900, height=800, template="plotly_white")
+    st.plotly_chart(fig, use_container_width=True)
+
+# UI
+st.title("🪚 Darwish CNC Pro - גרסה 36.4")
+if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
+edited_df = st.sidebar.data_editor(st.session_state.tool_df)
+z_off = st.sidebar.number_input("כיול Z כללי", value=2.0)
+mar = st.sidebar.number_input("Margin (מרווח סופי)", value=7.0)
+nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
+swap = st.sidebar.checkbox("החלף צירים (X ↔ Y)", value=True)
+uploaded = st.file_uploader("בחר קבצי MPR", accept_multiple_files=True)
+
+if uploaded:
+    for f in uploaded:
+        nc_txt, drills, geos = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, swap, "G54", nest, mar, z_off)
+        plot_preview(drills, geos)
+        st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", nc_txt, f.name.replace(".mpr", ".nc"))
+        with st.expander("צפה בקוד G-Code"):
+            st.code(nc_txt, language='gcode')
