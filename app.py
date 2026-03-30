@@ -3,8 +3,9 @@ import re, os
 import pandas as pd
 import math
 import plotly.graph_objects as go
+import numpy as np
 
-st.set_page_config(page_title="Darwish CNC Pro 36.9", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 37.0 - 3D Edition", layout="wide")
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -26,7 +27,7 @@ def get_safe_float(key, block, default=0.0):
 def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, global_z_off):
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
-    width_original = get_safe_float('l', mpr_text, 1414.0) # רוחב הפלטה המקורית
+    width_original = get_safe_float('l', mpr_text, 1414.0)
     
     geos = {}
     parts = re.split(r'\](\d+)', mpr_text)
@@ -48,20 +49,17 @@ def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, gl
         f_z = (thickness - ti) - global_z_off - conf.get("תיקון_Z", 0.0)
         for i in range(an):
             raw_drills.append({'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
-                               'z': f_z, 't': conf['T_CNC'], 's': conf['S'], 'f': conf['F'], 'dia': du, 'color': conf['צבע'], 'group': m.start()})
+                               'z': f_z, 'top_z': thickness, 't': conf['T_CNC'], 's': conf['S'], 'f': conf['F'], 'dia': du, 'color': conf['צבע'], 'group': m.start()})
 
-    # שלב הסיבוב - ללא נרמול אוטומטי (שומר על המרחק המקורי)
     if rotate_90:
         for d in raw_drills:
             old_x, old_y = d['x'], d['y']
-            # סיבוב 90 מעלות CCW סביב ציר הלוח
             d['x'], d['y'] = width_original - old_y, old_x
         for pts in geos.values():
             for p in pts:
                 old_x, old_y = p[0], p[1]
                 p[0], p[1] = width_original - old_y, old_x
 
-    # שלב ההצמדה (Nesting) - רק אם המשתמש סימן את התיבה
     if zero_nesting:
         inner_geos = {k: v for k, v in geos.items() if k != "1"}
         ref_x = [p[0] for pts in inner_geos.values() for p in pts] if inner_geos else [d['x'] for d in raw_drills]
@@ -71,7 +69,6 @@ def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, gl
             for d in raw_drills: d['x'] -= mx; d['y'] -= my
             for pts in geos.values():
                 for p in pts: p[0] -= mx; p[1] -= my
-            # הוספת Margin רק לאחר ההצמדה
             for d in raw_drills: d['x'] += margin; d['y'] += margin
             for pts in geos.values():
                 for p in pts: p[0] += margin; p[1] += margin
@@ -85,32 +82,73 @@ def convert_logic(mpr_text, tool_df, rotate_90, offset, zero_nesting, margin, gl
                 ln, last_t = ln + 10, d['t']
             nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F{int(d['f'])}", f"N{ln+10} G00 Z{thickness+10:.3f}"])
             ln += 15
-    return "\n".join(nc), raw_drills, geos
+    return "\n".join(nc), raw_drills, geos, thickness
 
-def plot_preview(drills, geos):
+def plot_preview_3d(drills, geos, thickness):
     fig = go.Figure()
-    fig.add_shape(type="rect", x0=0, y0=0, x1=1600, y1=1600, fillcolor="whitesmoke", line=dict(color="gray", width=1), layer="below")
+    
+    # 1. יצירת הפלטה כקובייה תלת-ממדית (Mesh3d)
+    inner_geos = {k: v for k, v in geos.items() if k != "1"}
+    if inner_geos:
+        all_x = [p[0] for pts in inner_geos.values() for p in pts]
+        all_y = [p[1] for pts in inner_geos.values() for p in pts]
+        min_x, max_x = min(all_x)-5, max(all_x)+5
+        min_y, max_y = min(all_y)-5, max(all_y)+5
+        
+        # פאות הפלטה
+        fig.add_trace(go.Mesh3d(
+            x=[min_x, min_x, max_x, max_x, min_x, min_x, max_x, max_x],
+            y=[min_y, max_y, max_y, min_y, min_y, max_y, max_y, min_y],
+            z=[0, 0, 0, 0, thickness, thickness, thickness, thickness],
+            i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
+            j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
+            k=[0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
+            opacity=0.2, color='burlywood', name='חומר גלם'
+        ))
+
+    # 2. ציור כרסומים (קווים בתלת-ממד)
     for bid, pts in geos.items():
         if len(pts) > 1:
             x_p, y_p = zip(*pts)
-            fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', name=f'Milling {bid}', line=dict(color='red', width=2)))
+            z_p = [thickness] * len(pts)
+            fig.add_trace(go.Scatter3d(x=x_p, y=y_p, z=z_p, mode='lines', line=dict(color='red', width=4), name=f'Milling {bid}'))
+
+    # 3. ציור קידוחים (וקטורים אנכיים)
     for d in drills:
-        fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers', marker=dict(size=d['dia'], color=d['color'], line=dict(width=1, color='black')), name=f"{d['t']} (D{d['dia']})"))
-    fig.update_xaxes(range=[-50, 1650], gridcolor='lightgray')
-    fig.update_yaxes(range=[-50, 1650], scaleanchor="x", scaleratio=1, gridcolor='lightgray')
-    fig.update_layout(title="סימולטור שולחן מכונה - גרסה 36.9", width=900, height=800, template="plotly_white")
+        # קו המקדח מהחלק העליון עד לעומק הקידוח
+        fig.add_trace(go.Scatter3d(
+            x=[d['x'], d['x']], y=[d['y'], d['y']], z=[thickness, d['z']],
+            mode='lines+markers',
+            marker=dict(size=[d['dia'], 2], color=d['color']),
+            line=dict(color=d['color'], width=6),
+            name=f"D{d['dia']} ({d['t']})"
+        ))
+
+    fig.update_layout(
+        scene=dict(
+            xaxis_title='X (מילימטר)', yaxis_title='Y (מילימטר)', zaxis_title='Z (עומק)',
+            aspectmode='data'
+        ),
+        title="הדמיית CNC תלת-ממדית - אבי",
+        width=1000, height=800,
+        margin=dict(r=0, l=0, b=0, t=40)
+    )
     st.plotly_chart(fig, use_container_width=True)
 
-st.title("🪚 Darwish CNC Pro - גרסה 36.9")
+# UI
+st.title("🪚 Darwish CNC Pro - גרסה 37.0")
 if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
 edited_df = st.sidebar.data_editor(st.session_state.tool_df)
-mar = st.sidebar.number_input("Margin", value=7.0)
-nest = st.sidebar.checkbox("צמד לפינה", value=False)
+
+st.sidebar.markdown("---")
+mar = st.sidebar.number_input("Margin (מילימטר)", value=7.0)
+nest = st.sidebar.checkbox("צמד לפינה", value=True)
 rot = st.sidebar.checkbox("סובב 90 מעלות (Portrait)", value=True)
+
 uploaded = st.file_uploader("בחר קבצי MPR", accept_multiple_files=True)
 
 if uploaded:
     for f in uploaded:
-        nc_txt, drills, geos = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, rot, "G54", nest, mar, 2.0)
-        plot_preview(drills, geos)
+        nc_txt, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, rot, "G54", nest, mar, 2.0)
+        plot_preview_3d(drills, geos, thick)
         st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", nc_txt, f.name.replace(".mpr", ".nc"))
