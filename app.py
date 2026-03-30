@@ -5,9 +5,10 @@ import math
 from collections import defaultdict
 from io import BytesIO
 
-st.set_page_config(page_title="Darwish CNC Pro 28.0", layout="wide")
+# חייב להיות פקודה ראשונה
+st.set_page_config(page_title="Darwish CNC Pro 28.1", layout="wide")
 
-# פרופיל אבי - ברירות מחדל בטעינה ראשונה
+# פרופיל אבי - ברירות מחדל
 DEFAULT_TOOLS = [
     {"ID_MPR": "142", "תיאור": "כרסום 6", "T_CNC": "T2", "S_סלד": 18000, "F_התקדמות": 6000},
     {"ID_MPR": "158", "תיאור": "כרסום 8", "T_CNC": "T3", "S_סלד": 16000, "F_התקדמות": 8000},
@@ -18,7 +19,6 @@ DEFAULT_TOOLS = [
 ]
 
 def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting, margin, z_offset):
-    # יצירת מילון מהירות ו-T לפי ID_MPR
     tool_config = tool_df.set_index('ID_MPR').to_dict('index')
     
     t_m = re.search(r't="([\d.]+)"', mpr_text)
@@ -38,28 +38,38 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
     sections = mpr_text.split('<')
     for idx, sec in enumerate(sections):
         if sec.startswith('102'):
-            xa, ya = [float(re.search(f'{k}="([\\d.-]+)"', sec).group(1)) for k in ['XA', 'YA']]
-            ti, du = [float(re.search(f'{k}="([\\d.-]+)"', sec).group(1)) for k in ['TI', 'DU']]
-            an = int(re.search(r'AN="(\d+)"', sec).group(1)) if 'AN="' in sec else 1
-            ab = float(re.search(r'AB="([\d.-]+)"', sec).group(1)) if 'AB="' in sec else 0
-            wi = float(re.search(r'WI="([\d.-]+)"', sec).group(1)) if 'WI="' in sec else 0
-            tno = re.search(r'TNO="(\d+)"', sec).group(1) if 'TNO="' in sec else ""
-            
-            conf = tool_config.get(tno, {"T_CNC": "T44", "S_סלד": 4000, "F_התקדמות": 2000})
-            for i in range(an):
-                nx, ny = xa + i*ab*math.cos(math.radians(wi)), ya + i*ab*math.sin(math.radians(wi))
-                raw_drills.append({'x': nx, 'y': ny, 'z': (thickness-ti)-z_offset, 't': conf['T_CNC'], 's': conf['S_סלד'], 'f': conf['F_התקדמות'], 'group': idx})
+            try:
+                xa = float(re.search(r'XA="([\d.-]+)"', sec).group(1))
+                ya = float(re.search(r'YA="([\d.-]+)"', sec).group(1))
+                ti = float(re.search(r'TI="([\d.-]+)"', sec).group(1))
+                du = float(re.search(r'DU="([\d.-]+)"', sec).group(1))
+                an = int(re.search(r'AN="(\d+)"', sec).group(1)) if 'AN="' in sec else 1
+                ab = float(re.search(r'AB="([\d.-]+)"', sec).group(1)) if 'AB="' in sec else 0
+                wi = float(re.search(r'WI="([\d.-]+)"', sec).group(1)) if 'WI="' in sec else 0
+                tno = re.search(r'TNO="(\d+)"', sec).group(1) if 'TNO="' in sec else ""
+                
+                conf = tool_config.get(tno, {"T_CNC": "T44", "S_סלד": 4000, "F_התקדמות": 2000})
+                for i in range(an):
+                    nx = xa + i*ab*math.cos(math.radians(wi))
+                    ny = ya + i*ab*math.sin(math.radians(wi))
+                    raw_drills.append({'x': nx, 'y': ny, 'z': (thickness-ti)-z_offset, 't': conf['T_CNC'], 's': conf['S_סלד'], 'f': conf['F_התקדמות'], 'group': idx})
+            except: continue
 
         elif sec.startswith('105'):
-            gid = re.search(r'EA="(\d+):', sec).group(1)
-            za = float(re.search(r'ZA="([\d.-]+)"', sec).group(1))
-            tno = re.search(r'TNO="(\d+)"', sec).group(1) if 'TNO="' in sec else "142"
-            conf = tool_config.get(tno, {"T_CNC": "T2", "S_סלד": 18000, "F_התקדמות": 6000})
-            raw_millings.append({'geo_id': gid, 'z': za - z_offset, 't': conf['T_CNC'], 's': conf['S_סלד'], 'f': conf['F_התקדמות']})
+            try:
+                geo_match = re.search(r'EA="(\d+):', sec)
+                if geo_match:
+                    gid = geo_match.group(1)
+                    za = float(re.search(r'ZA="([\d.-]+)"', sec).group(1))
+                    tno = re.search(r'TNO="(\d+)"', sec).group(1) if 'TNO="' in sec else "142"
+                    conf = tool_config.get(tno, {"T_CNC": "T2", "S_סלד": 18000, "F_התקדמות": 6000})
+                    raw_millings.append({'geo_id': gid, 'z': za - z_offset, 't': conf['T_CNC'], 's': conf['S_סלד'], 'f': conf['F_התקדמות']})
+            except: continue
 
-    # Nesting
+    # Nesting - Fixed typo: using 'geos' instead of 'geometries'
     active_x = [d['x'] for d in raw_drills] + [p[0] for bid, pts in geos.items() if bid != "1" for p in pts]
-    active_y = [d['y'] for d in raw_drills] + [p[1] for bid, pts in geometries.items() if bid != "1" for p in pts]
+    active_y = [d['y'] for d in raw_drills] + [p[1] for bid, pts in geos.items() if bid != "1" for p in pts]
+    
     if active_x and active_y:
         mx, my = min(active_x), min(active_y)
         for d in raw_drills:
@@ -73,7 +83,6 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
                 if swap_axes: p[0], p[1] = p[1], p[0]
 
     nc, ln, last_t = [f"G90 {offset}"], 10, ""
-    # יצירת קוד לפי כלי ומהירותו
     for tool_name in sorted(list(set(d['t'] for d in raw_drills))):
         subset = sorted([dr for dr in raw_drills if dr['t']==tool_name], key=lambda k: (k['group'], k['x']))
         for d in subset:
@@ -96,7 +105,7 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
     return "\n".join(nc)
 
 # UI
-st.title("🪚 Darwish CNC Pro - גרסה 28.0")
+st.title("🪚 Darwish CNC Pro - גרסה 28.1")
 st.sidebar.header("🛠️ טבלת כלים ומהירויות")
 if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
 edited_df = st.sidebar.data_editor(st.session_state.tool_df, num_rows="dynamic")
@@ -104,20 +113,3 @@ edited_df = st.sidebar.data_editor(st.session_state.tool_df, num_rows="dynamic")
 st.sidebar.markdown("---")
 st.sidebar.header("📏 כיול (המכונה של אבי)")
 z_off = st.sidebar.number_input("תוספת עומק (מילימטר)", value=2.0)
-mar = st.sidebar.number_input("מרווח ביטחון (מילימטר)", value=7.0)
-
-col1, col2 = st.columns([1, 1])
-with col1:
-    swap = st.checkbox("החלף צירים (X ↔ Y)", value=True)
-    nest = st.checkbox("צמד לפינה", value=True)
-    off = st.selectbox("נקודת אפס", ["G54", "G55"])
-    mode = st.radio("שיטה:", ('לפי MPR', '2 פסיעות'))
-    uploaded = st.file_uploader("בחר MPR", accept_multiple_files=True)
-
-with col2:
-    if uploaded:
-        pv = 2 if '2 פסיעות' in mode else 0
-        for f in uploaded:
-            res = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, pv, swap, off, nest, mar, z_off)
-            st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", res, f.name.replace(".mpr", ".nc"))
-            st.code(res, language='gcode')
