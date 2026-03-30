@@ -3,7 +3,8 @@ import re, os
 import pandas as pd
 import math
 
-st.set_page_config(page_title="Darwish CNC Pro 35.0", layout="wide")
+# חובה: פקודה ראשונה באפליקציה
+st.set_page_config(page_title="Darwish CNC Pro 35.1", layout="wide")
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0},
@@ -41,8 +42,9 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
         b = m.group(1)
         xa, ya, ti, du = [get_safe_float(k, b) for k in ['XA', 'YA', 'TI', 'DU']]
         an, ab, wi = int(get_safe_float('AN', b, 1)), get_safe_float('AB', b), get_safe_float('WI', b)
+        
         conf = dia_map.get(round(du, 1))
-        if not conf: continue
+        if conf is None: continue # תיקון השגיאה כאן
         
         final_z = (thickness - ti) - global_z_off - conf.get("תיקון_Z", 0.0)
         for i in range(an):
@@ -58,12 +60,16 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
         if geo_m:
             eid = geo_m.group(1)
             za = get_safe_float('ZA', b)
-            conf = dia_map.get(6.0, {"T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0})
-            raw_millings.append({'geo_id': eid, 'z': za - global_z_off - conf.get("תיקון_Z", 0.0), 't': conf['T_CNC'], 's': conf['S'], 'f': conf['F']})
+            conf = dia_map.get(6.0)
+            if conf is None:
+                conf = {"T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0}
+            raw_millings.append({
+                'geo_id': eid, 'z': za - global_z_off - conf.get("תיקון_Z", 0.0),
+                't': conf['T_CNC'], 's': conf['S'], 'f': conf['F']
+            })
 
-    # נרמול ואיפוס גלובלי (שימור יחסי)
+    # Nesting חכם: איפוס גלובלי כגוש אחד
     if zero_nesting:
-        # עדיפות לכרסומים כגבולות גזרה
         ref_x = [p[0] for pts in geos.values() for p in pts] if geos else [d['x'] for d in raw_drills]
         ref_y = [p[1] for pts in geos.values() for p in pts] if geos else [d['y'] for d in raw_drills]
         if ref_x and ref_y:
@@ -109,7 +115,7 @@ def convert_logic(mpr_text, tool_df, num_passes, swap_axes, offset, zero_nesting
     return "\n".join(nc)
 
 # UI
-st.title("🪚 Darwish CNC Pro - גרסה 35.0")
+st.title("🪚 Darwish CNC Pro - גרסה 35.1")
 if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
 edited_df = st.sidebar.data_editor(st.session_state.tool_df, num_rows="dynamic")
 z_off = st.sidebar.number_input("כיול Z כללי", value=2.0)
