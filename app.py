@@ -5,9 +5,9 @@ import math
 import plotly.graph_objects as go
 import numpy as np
 
-st.set_page_config(page_title="Darwish CNC Pro 37.4 - Final CAD", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 37.5", layout="wide")
 
-# ניהול מצב מדידה בזיכרון
+# ניהול זיכרון מדידה
 if 'measure_pts' not in st.session_state:
     st.session_state.measure_pts = []
 
@@ -52,10 +52,13 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
         if conf is None: continue
         f_z = (thickness - ti) - global_z_off - conf.get("תיקון_Z", 0.0)
         for i in range(an):
-            raw_drills.append({'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
-                               'z': f_z, 't': conf['T_CNC'], 'dia': du, 'color': conf['צבע'], 'group': m.start()})
+            raw_drills.append({
+                'x': xa + i*ab*math.cos(math.radians(wi)), 
+                'y': ya + i*ab*math.sin(math.radians(wi)),
+                'z': f_z, 't': conf['T_CNC'], 'desc': conf['תיאור'], 
+                'dia': du, 'color': conf['צבע'], 'group': m.start()
+            })
 
-    # סיבוב 90 מעלות CCW
     if rotate_90:
         for d in raw_drills:
             old_x, old_y = d['x'], d['y']
@@ -65,7 +68,6 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
                 old_x, old_y = p[0], p[1]
                 p[0], p[1] = width_original - old_y, old_x
 
-    # הצמדה לפינה (Nesting)
     if zero_nesting:
         inner_geos = {k: v for k, v in geos.items() if k != "1"}
         ref_x = [p[0] for pts in inner_geos.values() for p in pts] if inner_geos else [d['x'] for d in raw_drills]
@@ -94,16 +96,14 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
 def plot_master_3d(drills, geos, thickness, top_view):
     fig = go.Figure()
     
-    # 1. שולחן המכונה (קבוע ב-0,0)
+    # 1. שולחן המכונה
     fig.add_trace(go.Mesh3d(
-        x=[0, 0, 2000, 2000, 0, 0, 2000, 2000],
-        y=[0, 1500, 1500, 0, 0, 1500, 1500, 0],
+        x=[0, 0, 2000, 2000, 0, 0, 2000, 2000], y=[0, 1500, 1500, 0, 0, 1500, 1500, 0],
         z=[-1, -1, -1, -1, 0, 0, 0, 0],
-        i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2], j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3], k=[0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
         opacity=0.05, color='gray', hoverinfo='skip', name='שולחן'
     ))
 
-    # 2. פלטה
+    # 2. הפלטה
     inner_geos = {k: v for k, v in geos.items() if k != "1"}
     if inner_geos:
         all_x = [p[0] for pts in inner_geos.values() for p in pts]
@@ -113,11 +113,10 @@ def plot_master_3d(drills, geos, thickness, top_view):
             x=[min_x, min_x, max_x, max_x, min_x, min_x, max_x, max_x],
             y=[min_y, max_y, max_y, min_y, min_y, max_y, max_y, min_y],
             z=[0, 0, 0, 0, thickness, thickness, thickness, thickness],
-            i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2], j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3], k=[0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
             opacity=0.1, color='burlywood', hoverinfo='skip', name='חלק'
         ))
 
-    # 3. קידוחים
+    # 3. קידוחים עם HOVER משופר
     for i, d in enumerate(drills):
         actual_depth = thickness - d['z']
         fig.add_trace(go.Scatter3d(
@@ -126,14 +125,19 @@ def plot_master_3d(drills, geos, thickness, top_view):
             marker=dict(size=[d['dia']*1.5, 0], color=d['color']),
             line=dict(color=d['color'], width=7),
             customdata=[i],
-            name=f"#{i}: D{d['dia']}",
-            hovertemplate=f"<b>קידוח #{i}</b><br>כלי: {d['t']}<br>X: %{{x:.2f}}<br>Y: %{{y:.2f}}<br>עומק בפועל: {actual_depth:.2f} ממ<extra></extra>"
+            name=f"#{i}: {d['desc']}",
+            hovertemplate=(
+                f"<b>קידוח #{i}</b><br>"
+                f"מספר כלי: {d['t']}<br>"
+                f"תיאור כלי: {d['desc']}<br>"
+                f"X: %{{x:.2f}}<br>Y: %{{y:.2f}}<br>"
+                f"עומק בפועל: {actual_depth:.2f} ממ<extra></extra>"
+            )
         ))
 
-    # 4. קו מדידה
+    # 4. סרגל מדידה
     if len(st.session_state.measure_pts) >= 2:
-        idx1, idx2 = st.session_state.measure_pts[-2], st.session_state.measure_pts[-1]
-        p1, p2 = drills[idx1], drills[idx2]
+        p1, p2 = drills[st.session_state.measure_pts[-2]], drills[st.session_state.measure_pts[-1]]
         dist = math.sqrt((p1['x']-p2['x'])**2 + (p1['y']-p2['y'])**2)
         fig.add_trace(go.Scatter3d(
             x=[p1['x'], p2['x']], y=[p1['y'], p2['y']], z=[thickness+5, thickness+5],
@@ -143,7 +147,7 @@ def plot_master_3d(drills, geos, thickness, top_view):
 
     camera = dict(eye=dict(x=0, y=0, z=2.5), up=dict(x=0, y=1, z=0)) if top_view else dict(eye=dict(x=1.2, y=1.2, z=1.2))
     fig.update_layout(
-        scene=dict(camera=camera, aspectmode='data', dragmode='orbit' if not top_view else 'pan', 
+        scene=dict(camera=camera, aspectmode='data', dragmode='orbit' if not top_view else 'pan',
                    xaxis=dict(range=[0, 2000]), yaxis=dict(range=[0, 1500])),
         margin=dict(l=0, r=0, b=0, t=0), height=850
     )
@@ -155,14 +159,13 @@ def plot_master_3d(drills, geos, thickness, top_view):
             st.session_state.measure_pts.append(new_idx)
             st.rerun()
 
-# UI Sidebar
-st.sidebar.title("🛠️ ממשק אבי CNC 37.4")
-view_2d = st.sidebar.toggle("מבט על (2D)", value=False)
+# Sidebar
+st.sidebar.title("🛠️ CNC 37.5 ממשק אבי")
+view_2d = st.sidebar.toggle("(2D) מבט על", value=False)
 st.sidebar.markdown("---")
-nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
-rot = st.sidebar.checkbox("סובב 90 מעלות (Portrait)", value=True)
+nest = st.sidebar.checkbox("(Nesting) צמד לפינה", value=True)
+rot = st.sidebar.checkbox("(Portrait) סובב 90 מעלות", value=True)
 mar = st.sidebar.number_input("Margin", value=7.0)
-st.sidebar.markdown("---")
 if st.sidebar.button("נקה מדידות"):
     st.session_state.measure_pts = []
     st.rerun()
