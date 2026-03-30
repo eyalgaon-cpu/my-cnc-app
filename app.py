@@ -4,8 +4,8 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-# חובה: פקודה ראשונה
-st.set_page_config(page_title="Darwish CNC Pro 36.1", layout="wide")
+# הגדרות דף
+st.set_page_config(page_title="Darwish CNC Pro 36.2", layout="wide")
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -105,17 +105,33 @@ def convert_logic(mpr_text, tool_df, swap_axes, offset, zero_nesting, margin, gl
 
 def plot_preview(drills, geos):
     fig = go.Figure()
+    all_x, all_y = [], []
+    
     for bid, pts in geos.items():
         if len(pts) > 1:
             x_pts, y_pts = zip(*pts)
-            fig.add_trace(go.Scatter(x=x_pts, y=y_pts, mode='lines', name=f'Milling {bid}', line=dict(color='red')))
+            all_x.extend(x_pts); all_y.extend(y_pts)
+            fig.add_trace(go.Scatter(x=x_pts, y=y_pts, mode='lines', name=f'Milling {bid}', line=dict(color='red', width=2)))
+    
     for d in drills:
-        fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers', marker=dict(size=d['dia'], color=d['color']), name=f"{d['t']} (D{d['dia']})", hovertemplate=f"X:%{{x}}<br>Y:%{{y}}<br>Z:{d['z']:.2f}"))
-    fig.update_layout(title="תצוגה מקדימה - אבי CNC", xaxis_title="X (מילימטר)", yaxis_title="Y (מילימטר)", width=800, height=600, template="plotly_white")
-    st.plotly_chart(fig)
+        all_x.append(d['x']); all_y.append(d['y'])
+        fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers', 
+                                 marker=dict(size=d['dia'], color=d['color'], line=dict(width=1, color='black')), 
+                                 name=f"{d['t']} (D{d['dia']})", 
+                                 hovertemplate=f"X:%{{x}}<br>Y:%{{y}}<br>Z:{d['z']:.2f}"))
+    
+    if all_x and all_y:
+        pad = 50
+        fig.update_xaxes(range=[min(all_x)-pad, max(all_x)+pad])
+        fig.update_yaxes(range=[min(all_y)-pad, max(all_y)+pad], scaleanchor="x", scaleratio=1)
+
+    fig.update_layout(title="תצוגה מקדימה - אבי CNC (פרופורציה 1:1)", 
+                      xaxis_title="X (מילימטר)", yaxis_title="Y (מילימטר)", 
+                      width=900, height=800, template="plotly_white", showlegend=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 # UI
-st.title("🪚 Darwish CNC Pro - גרסה 36.1")
+st.title("🪚 Darwish CNC Pro - גרסה 36.2")
 if 'tool_df' not in st.session_state: st.session_state.tool_df = pd.DataFrame(DEFAULT_TOOLS)
 edited_df = st.sidebar.data_editor(st.session_state.tool_df)
 z_off = st.sidebar.number_input("כיול Z כללי", value=2.0)
@@ -129,4 +145,5 @@ if uploaded:
         nc_txt, drills, geos = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), edited_df, swap, "G54", nest, mar, z_off)
         plot_preview(drills, geos)
         st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", nc_txt, f.name.replace(".mpr", ".nc"))
-        st.code(nc_txt, language='gcode')
+        with st.expander("צפה בקוד G-Code"):
+            st.code(nc_txt, language='gcode')
