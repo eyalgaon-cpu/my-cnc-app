@@ -5,7 +5,7 @@ import math
 import plotly.graph_objects as go
 
 # הגדרות דף
-st.set_page_config(page_title="Darwish CNC Pro 40.3", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 40.4", layout="wide")
 
 # טבלת כלים
 DEFAULT_TOOLS = [
@@ -53,25 +53,19 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
                 'z': f_z, 't': conf['T_CNC'], 'desc': conf['תיאור'], 'dia': du, 'color': conf['צבע'], 'group': m.start()
             })
 
-    # שלב 1: סיבוב
     if rotate_90:
         for d in raw_drills: d['x'], d['y'] = -d['y'], d['x']
         for pts in geos.values():
             for p in pts: p[0], p[1] = -p[1], p[0]
 
-    # שלב 2: הגנת "רצפה אפס" + Nesting
     all_x = [d['x'] for d in raw_drills] + [p[0] for pts in geos.values() for p in pts]
     all_y = [d['y'] for d in raw_drills] + [p[1] for pts in geos.values() for p in pts]
-    
     if all_x and all_y:
         min_x, min_y = min(all_x), min(all_y)
-        
-        # אם נסטינג פעיל - מאפסים הכל לפינה
         if zero_nesting:
             for d in raw_drills: d['x'] -= min_x; d['y'] -= min_y
             for pts in geos.values():
                 for p in pts: p[0] -= min_x; p[1] -= min_y
-        # אם נסטינג כבוי - מתקנים רק אם יש ערכים שליליים
         else:
             shift_x = abs(min_x) if min_x < 0 else 0
             shift_y = abs(min_y) if min_y < 0 else 0
@@ -79,7 +73,6 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
             for pts in geos.values():
                 for p in pts: p[0] += shift_x; p[1] += shift_y
 
-    # שלב 3: מרג'ין (תמיד פועל כתוספת)
     for d in raw_drills:
         d['x'] += margin_x
         d['y'] += margin_y
@@ -88,7 +81,6 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
             p[0] += margin_x
             p[1] += margin_y
 
-    # יצירת קוד NC
     nc, ln, last_t = [f"G90 G54"], 10, ""
     for t_name in sorted(list(set(d['t'] for d in raw_drills))):
         subset = sorted([dr for dr in raw_drills if dr['t']==t_name], key=lambda k: (k['group'], k['x']))
@@ -98,77 +90,59 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
                 ln, last_t = ln + 10, d['t']
             nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F2000", f"N{ln+10} G00 Z{thickness+10:.3f}"])
             ln += 15
-            
     return "\n".join(nc), raw_drills, geos, thickness
 
 def plot_2d_pro(drills, geos, thickness):
     fig = go.Figure()
-    
-    # משטח המכונה
     fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, fillcolor="whitesmoke", line=dict(color="black", width=2), layer="below")
     
-    # כרסומים
     for bid, pts in geos.items():
         if len(pts) > 1:
             x_p, y_p = zip(*pts)
             fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2), hoverinfo='skip'))
 
-    # קדחים
     for d in drills:
         actual_depth = thickness - d['z']
         fig.add_trace(go.Scatter(
             x=[d['x']], y=[d['y']], mode='markers',
             marker=dict(size=d['dia'], color=d['color'], line=dict(width=1, color='black')),
-            text=f"{d['desc']}",
+            text=d['desc'],
             customdata=[[d['t'], actual_depth]],
             hovertemplate=(
-                "<b>%{text}</b><br>"
+                "<b>%{customdata[0]}</b><br>"
                 "תיאור כלי: %{text}<br>"
-                "כלי: %{customdata[0]}<br>"
                 "עומק חדירה: %{customdata[1]:.2f} מילימטר<br>"
                 "מיקום: X=%{x:.2f}, Y=%{y:.2f}<extra></extra>"
             )
         ))
 
-    # הגדרות צירים אינטראקטיביות
-    fig.update_xaxes(
-        title="ציר X (מילימטר)",
-        range=[-50, 1350],
-        gridcolor='rgba(0,0,0,0.1)',
-        minor=dict(ticklen=4, tickcolor="rgba(0,0,0,0.2)", showgrid=True),
-        showline=True, linewidth=2, linecolor='black', mirror=True
-    )
-    fig.update_yaxes(
-        title="ציר Y (מילימטר)",
-        range=[-50, 3100],
-        gridcolor='rgba(0,0,0,0.1)',
-        minor=dict(ticklen=4, tickcolor="rgba(0,0,0,0.2)", showgrid=True),
-        scaleanchor="x", scaleratio=1,
-        showline=True, linewidth=2, linecolor='black', mirror=True
-    )
-
+    fig.update_xaxes(title="ציר X (מילימטר)", range=[-50, 1350], gridcolor='rgba(0,0,0,0.1)', minor=dict(ticklen=4, showgrid=True))
+    fig.update_yaxes(title="ציר Y (מילימטר)", range=[-50, 3100], gridcolor='rgba(0,0,0,0.1)', scaleanchor="x", scaleratio=1, minor=dict(ticklen=4, showgrid=True))
+    
     fig.update_layout(
-        title="Darwish CNC 40.3 - Interactive Grid & Ruler",
+        title="Darwish CNC 40.4 - RTL & Border Fix",
         width=950, height=900,
         template="plotly_white",
         showlegend=False,
-        hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial")
+        hoverlabel=dict(
+            bgcolor="white", 
+            bordercolor="black", 
+            font_size=14, 
+            align="right"
+        )
     )
-    
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
-# Sidebar UI
-st.sidebar.title("🛠️ ממשק אבי CNC 40.3")
-st.sidebar.markdown("---")
+st.sidebar.title("🛠️ ממשק אבי CNC 40.4")
 nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
 rot = st.sidebar.checkbox("סובב Portrait (90°)", value=True)
 st.sidebar.markdown("**מרווח הגנה (Margin):**")
 mx = st.sidebar.number_input("ציר X (מילימטר)", value=0.0)
 my = st.sidebar.number_input("ציר Y (מילימטר)", value=0.0)
 
-uploaded = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
+uploaded = st.file_uploader("טען MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
         nc, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mx, my, 2.0)
         plot_2d_pro(drills, geos, thick)
-        st.download_button(f"📂 הורד קובץ NC של {f.name.split('.')[0]}", nc, f.name.replace(".mpr", ".nc"))
+        st.download_button(f"📂 הורד קובץ NC: {f.name.split('.')[0]}", nc, f.name.replace(".mpr", ".nc"))
