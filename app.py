@@ -5,9 +5,8 @@ import math
 import plotly.graph_objects as go
 
 # הגדרות דף
-st.set_page_config(page_title="Darwish CNC Pro 40.7", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 40.8", layout="wide")
 
-# מודול 1: ניהול פרופילי מכונות (אבי / מושיקו / אחר)
 if 'tool_config' not in st.session_state:
     st.session_state.tool_config = [
         {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "צבע": "red", "תיקון_Z": 0.0},
@@ -30,6 +29,18 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
     
+    # שליפת נתוני כרסום קונטור (בלוק 130)
+    contour_tool = "לא זוהה"
+    passes = []
+    contour_match = re.search(r'<130(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL)
+    if contour_match:
+        c_block = contour_match.group(1)
+        c_dia = get_safe_float('DU', c_block)
+        contour_tool = f"כרסום {c_dia:.0f}"
+        ti_total = get_safe_float('TI', c_block)
+        # חישוב פסיעות (לוגיקה הנדסית: פסיעה ראשונה חצי עומק, שניה עומק מלא בתוספת 2 מילימטר לנקיון)
+        passes = [f"{ti_total/2:.2f} מילימטר", f"{ti_total + 2:.2f} מילימטר"]
+
     geos = {}
     parts = re.split(r'\](\d+)', mpr_text)
     for i in range(1, len(parts), 2):
@@ -76,18 +87,14 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
             for pts in geos.values():
                 for p in pts: p[0] += shift_x; p[1] += shift_y
         
-        # חישוב מידות סופיות לאחר נסטינג/סיבוב
         final_x = [d['x'] for d in raw_drills] + [p[0] for pts in geos.values() for p in pts]
         final_y = [d['y'] for d in raw_drills] + [p[1] for pts in geos.values() for p in pts]
         dx, dy = max(final_x) - min(final_x), max(final_y) - min(final_y)
 
     for d in raw_drills:
-        d['x'] += margin_x
-        d['y'] += margin_y
+        d['x'] += margin_x; d['y'] += margin_y
     for pts in geos.values():
-        for p in pts:
-            p[0] += margin_x
-            p[1] += margin_y
+        for p in pts: p[0] += margin_x; p[1] += margin_y
 
     nc, ln, last_t = [f"G90 G54"], 10, ""
     for t_name in sorted(list(set(d['t'] for d in raw_drills))):
@@ -98,11 +105,15 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
                 ln, last_t = ln + 10, d['t']
             nc.extend([f"N{ln} G00 X{d['x']:.3f} Y{d['y']:.3f}", f"N{ln+5} G01 Z{d['z']:.3f} F2000", f"N{ln+10} G00 Z{thickness+10:.3f}"])
             ln += 15
-    return "\n".join(nc), raw_drills, geos, thickness, dx, dy
+    return "\n".join(nc), raw_drills, geos, thickness, dx, dy, contour_tool, passes
 
-def plot_2d_pro(drills, geos, thickness, dx, dy, filename):
+def plot_2d_pro(drills, geos, thickness, dx, dy, contour_tool, passes, filename):
     st.markdown(f"### 📄 קובץ: {filename}")
-    st.info(f"📏 **מידות חלק:** אורך (X): {dx:.2f} מילימטר | רוחב (Y): {dy:.2f} מילימטר | עובי (Z): {thickness:.2f} מילימטר")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"📏 **מידות חלק:** {dx:.2f} × {dy:.2f} מילימטר | עובי: {thickness:.2f} מילימטר")
+    with col2:
+        st.warning(f"🪚 **כרסום קונטור:** {contour_tool} | פסיעות: {' ← '.join(passes)}")
     
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, fillcolor="whitesmoke", line=dict(color="black", width=2), layer="below")
@@ -110,14 +121,21 @@ def plot_2d_pro(drills, geos, thickness, dx, dy, filename):
     for bid, pts in geos.items():
         if len(pts) > 1:
             x_p, y_p = zip(*pts)
-            fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2), hoverinfo='skip'))
+            # חישוב מידות קונטור לריחוף
+            c_dx, c_dy = max(x_p) - min(x_p), max(y_p) - min(y_p)
+            fig.add_trace(go.Scatter(
+                x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2),
+                name=f"קונטור {bid}",
+                text=f"מידות חלק: {c_dx:.2f} × {c_dy:.2f} מילימטר",
+                hoverinfo="text+name"
+            ))
 
     for d in drills:
         actual_depth = thickness - d['z']
         fig.add_trace(go.Scatter(
             x=[d['x']], y=[d['y']], mode='markers',
             marker=dict(size=d['dia'], color=d['color'], line=dict(width=1, color='black')),
-            text=[d['desc']], # תיקון מערך עבור Plotly
+            text=[d['desc']], 
             customdata=[[d['t'], actual_depth]],
             hovertemplate=(
                 "<span style='font-size:18px;'><b>%{customdata[0]}</b></span><br>"
@@ -127,44 +145,36 @@ def plot_2d_pro(drills, geos, thickness, dx, dy, filename):
             )
         ))
 
-    fig.update_xaxes(title="ציר X (מילימטר)", range=[-100, 1400], gridcolor='rgba(0,0,0,0.1)', minor=dict(ticklen=4, showgrid=True), showline=True, linewidth=2, linecolor='black', mirror=True)
-    fig.update_yaxes(title="ציר Y (מילימטר)", range=[-100, 3150], gridcolor='rgba(0,0,0,0.1)', scaleanchor="x", scaleratio=1, minor=dict(ticklen=4, showgrid=True), showline=True, linewidth=2, linecolor='black', mirror=True)
+    fig.update_xaxes(title="ציר X (מילימטר)", range=[-100, 1400], gridcolor='rgba(0,0,0,0.1)', minor=dict(ticklen=4, showgrid=True), showline=True, mirror=True)
+    fig.update_yaxes(title="ציר Y (מילימטר)", range=[-100, 3150], gridcolor='rgba(0,0,0,0.1)', scaleanchor="x", scaleratio=1, minor=dict(ticklen=4, showgrid=True), showline=True, mirror=True)
     
     fig.update_layout(
         title=f"תצוגת מכונה - {filename}",
-        width=950, height=900,
-        template="plotly_white",
-        showlegend=False,
+        width=950, height=900, template="plotly_white", showlegend=False,
         hoverlabel=dict(bgcolor="white", bordercolor="black", font_size=14, font_color="black", align="right")
     )
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
-# Sidebar - הגדרות כלליות
-st.sidebar.title("🛠️ ממשק דרוויש 40.7")
-st.sidebar.markdown("---")
+st.sidebar.title("🛠️ ממשק דרוויש 40.8")
 nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
 rot = st.sidebar.checkbox("סובב Portrait (90°)", value=True)
 gz_off = st.sidebar.slider("כיול Z גלובלי (מילימטר)", -5.0, 5.0, 2.0, 0.1)
-
-st.sidebar.markdown("**מרווח הגנה (Margin):**")
 mx = st.sidebar.number_input("מרג'ין X (מילימטר)", value=0.0)
 my = st.sidebar.number_input("מרג'ין Y (מילימטר)", value=0.0)
 
-# Main UI - ניהול כלים דינמי
 st.markdown("### 🧰 הגדרות מכונה וכלים")
 with st.expander("ערוך טבלת כלים (עבור אבי/מושיקו)"):
     edited_df = st.data_editor(pd.DataFrame(st.session_state.tool_config), num_rows="dynamic")
     if st.button("שמור הגדרות כלים"):
         st.session_state.tool_config = edited_df.to_dict('records')
-        st.success("הגדרות הכלים עודכנו בהצלחה.")
 
 uploaded = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
-        nc, drills, geos, thick, dx, dy = convert_logic(
+        nc, drills, geos, thick, dx, dy, c_tool, pss = convert_logic(
             f.getvalue().decode('utf-8', errors='ignore'), 
             pd.DataFrame(st.session_state.tool_config), 
             rot, nest, mx, my, gz_off
         )
-        plot_2d_pro(drills, geos, thick, dx, dy, f.name)
+        plot_2d_pro(drills, geos, thick, dx, dy, c_tool, pss, f.name)
         st.download_button(f"📂 הורד NC: {f.name.split('.')[0]}", nc, f.name.replace(".mpr", ".nc"))
