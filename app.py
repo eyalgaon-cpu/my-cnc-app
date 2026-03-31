@@ -4,7 +4,7 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Darwish CNC Pro 38.0", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 38.1", layout="wide")
 
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
@@ -26,7 +26,7 @@ def get_safe_float(key, block, default=0.0):
 def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_off):
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
-    width_original = get_safe_float('l', mpr_text, 1414.0)
+    l_orig = get_safe_float('l', mpr_text, 2440.0) # אורך הפלטה
     
     geos = {}
     parts = re.split(r'\](\d+)', mpr_text)
@@ -52,28 +52,28 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
                 'z': f_z, 't': conf['T_CNC'], 'desc': conf['תיאור'], 'dia': du, 'color': conf['צבע'], 'group': m.start()
             })
 
+    # שלב הסיבוב - 90 מעלות CCW (Portrait)
     if rotate_90:
         for d in raw_drills:
             old_x, old_y = d['x'], d['y']
-            d['x'], d['y'] = width_original - old_y, old_x
+            d['x'], d['y'] = l_orig - old_y, old_x
         for pts in geos.values():
             for p in pts:
                 old_x, old_y = p[0], p[1]
-                p[0], p[1] = width_original - old_y, old_x
+                p[0], p[1] = l_orig - old_y, old_x
 
+    # שלב ההצמדה (Nesting) - לפי פינת הפלטה (ראשית הצירים)
     if zero_nesting:
-        inner_geos = {k: v for k, v in geos.items() if k != "1"}
-        ref_x = [p[0] for pts in inner_geos.values() for p in pts] if inner_geos else [d['x'] for d in raw_drills]
-        ref_y = [p[1] for pts in inner_geos.values() for p in pts] if inner_geos else [d['y'] for d in raw_drills]
-        if ref_x and ref_y:
-            mx, my = min(ref_x), min(ref_y)
-            for d in raw_drills: d['x'] -= mx; d['y'] -= my
-            for pts in geos.values():
-                for p in pts: p[0] -= mx; p[1] -= my
-            for d in raw_drills: d['x'] += margin; d['y'] += margin
-            for pts in geos.values():
-                for p in pts: p[0] += margin; p[1] += margin
+        # ההצמדה היא תמיד ל-(0,0) של המכונה פלוס ה-Margin
+        for d in raw_drills:
+            d['x'] += margin
+            d['y'] += margin
+        for pts in geos.values():
+            for p in pts:
+                p[0] += margin
+                p[1] += margin
 
+    # יצירת קוד NC
     nc, ln, last_t = [f"G90 G54"], 10, ""
     for t_name in sorted(list(set(d['t'] for d in raw_drills))):
         subset = sorted([dr for dr in raw_drills if dr['t']==t_name], key=lambda k: (k['group'], k['x']))
@@ -86,17 +86,17 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
             
     return "\n".join(nc), raw_drills, geos, thickness
 
-def plot_2d_clean(drills, geos, thickness):
+def plot_2d_pro(drills, geos, thickness):
     fig = go.Figure()
     
     # שולחן המכונה
     fig.add_shape(type="rect", x0=0, y0=0, x1=2000, y1=1500, fillcolor="whitesmoke", line=dict(color="gray", width=1), layer="below")
     
-    # חלקים וכרסומים
+    # כרסומים
     for bid, pts in geos.items():
         if len(pts) > 1:
             x_p, y_p = zip(*pts)
-            fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2), hoverinfo='skip', name=f'Milling {bid}'))
+            fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2), hoverinfo='skip', name=f'כרסום {bid}'))
 
     # קדחים
     for d in drills:
@@ -105,29 +105,31 @@ def plot_2d_clean(drills, geos, thickness):
             x=[d['x']], y=[d['y']], mode='markers',
             marker=dict(size=d['dia'], color=d['color'], line=dict(width=1, color='black')),
             name=f"{d['t']}: {d['desc']}",
+            text=f"{d['desc']}", # לשימוש ב-Hover
+            customdata=[[d['t'], actual_depth]],
             hovertemplate=(
-                f"<b>{d['desc']}</b><br>"
-                f"מספר כלי במכונה: {d['t']}<br>"
-                f"עומק חדירה בפועל: {actual_depth:.2f} מילימטר<br>"
-                f"X: %{{x:.2f}} | Y: %{{y:.2f}}<extra></extra>"
+                f"<b>%{{text}}</b><br>"
+                f"מספר כלי במכונה: %{{customdata[0]}}<br>"
+                f"עומק חדירה בפועל: %{{customdata[1]:.2f}} מילימטר<br>"
+                f"מיקום: X=%{{x:.2f}} | Y=%{{y:.2f}}<extra></extra>"
             )
         ))
 
-    fig.update_xaxes(range=[-50, 2050], gridcolor='lightgray', title="X (מילימטר)")
-    fig.update_yaxes(range=[-50, 1550], scaleanchor="x", scaleratio=1, gridcolor='lightgray', title="Y (מילימטר)")
-    fig.update_layout(title="הדמיית CNC דו-ממדית - גרסה 38.0", width=1000, height=750, template="plotly_white")
+    fig.update_xaxes(range=[-50, 2050], gridcolor='lightgray', title="ציר אורך (X)")
+    fig.update_yaxes(range=[-50, 1550], scaleanchor="x", scaleratio=1, gridcolor='lightgray', title="ציר רוחב (Y)")
+    fig.update_layout(title="הדמיית מכונה - גרסה 38.1", width=1000, height=750, template="plotly_white")
     st.plotly_chart(fig, use_container_width=True)
 
-# UI Sidebar
-st.sidebar.title("🛠️ CNC 38.0 ממשק אבי")
+# ממשק משתמש
+st.sidebar.title("🛠️ ממשק אבי CNC - גרסה 38.1")
 st.sidebar.markdown("---")
-nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
-rot = st.sidebar.checkbox("סובב 90 מעלות (Portrait)", value=True)
-mar = st.sidebar.number_input("Margin", value=7.0)
+nest = st.sidebar.checkbox("צמד פלטה לפינה (Nesting)", value=True)
+rot = st.sidebar.checkbox("סובב פלטה (Portrait)", value=True)
+mar = st.sidebar.number_input("Margin (מילימטר)", value=7.0)
 
-uploaded = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
+uploaded = st.file_uploader("טען קבצי MPR של הפרויקט", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
-        nc, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mar, 2.0)
-        plot_2d_clean(drills, geos, thick)
-        st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", nc, f.name.replace(".mpr", ".nc"))
+        nc_txt, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mar, 2.0)
+        plot_2d_pro(drills, geos, thick)
+        st.download_button(f"📂 הורד קובץ NC: {f.name.replace('.mpr', '')}", nc_txt, f.name.replace(".mpr", ".nc"))
