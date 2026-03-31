@@ -5,7 +5,7 @@ import math
 import plotly.graph_objects as go
 
 # הגדרות דף
-st.set_page_config(page_title="Darwish CNC Pro 40.8", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 40.9", layout="wide")
 
 if 'tool_config' not in st.session_state:
     st.session_state.tool_config = [
@@ -29,17 +29,19 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
     
-    # שליפת נתוני כרסום קונטור (בלוק 130)
+    # הרחבת זיהוי כרסום קונטור (חיפוש בבלוקים 130 וגם 101)
     contour_tool = "לא זוהה"
     passes = []
-    contour_match = re.search(r'<130(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL)
+    # חיפוש רחב יותר בפורמט MPR
+    contour_match = re.search(r'<(130|101)(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL)
     if contour_match:
-        c_block = contour_match.group(1)
+        c_block = contour_match.group(2)
         c_dia = get_safe_float('DU', c_block)
-        contour_tool = f"כרסום {c_dia:.0f}"
+        if c_dia == 0: c_dia = get_safe_float('DI', c_block) # תמיכה בפורמט DI
+        contour_tool = f"כרסום {c_dia:.0f}" if c_dia > 0 else "כרסום סטנדרט"
         ti_total = get_safe_float('TI', c_block)
-        # חישוב פסיעות (לוגיקה הנדסית: פסיעה ראשונה חצי עומק, שניה עומק מלא בתוספת 2 מילימטר לנקיון)
-        passes = [f"{ti_total/2:.2f} מילימטר", f"{ti_total + 2:.2f} מילימטר"]
+        if ti_total > 0:
+            passes = [f"{ti_total/2:.2f} מילימטר", f"{ti_total + 2:.2f} מילימטר"]
 
     geos = {}
     parts = re.split(r'\](\d+)', mpr_text)
@@ -58,7 +60,8 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
         an, ab, wi = int(get_safe_float('AN', b, 1)), get_safe_float('AB', b), get_safe_float('WI', b)
         conf = dia_map.get(round(du, 1))
         if conf is None: continue
-        f_z = (thickness - ti) - global_z_off - conf.get("תיקון_Z", 0.0)
+        # תיקון לוגיקת Z: פלוס בכיול מקטין חדירה (מרחיק מהשולחן), מינוס מגדיל חדירה (מעמיק)
+        f_z = (thickness - ti) + global_z_off - conf.get("תיקון_Z", 0.0)
         for i in range(an):
             raw_drills.append({
                 'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
@@ -113,7 +116,7 @@ def plot_2d_pro(drills, geos, thickness, dx, dy, contour_tool, passes, filename)
     with col1:
         st.info(f"📏 **מידות חלק:** {dx:.2f} × {dy:.2f} מילימטר | עובי: {thickness:.2f} מילימטר")
     with col2:
-        st.warning(f"🪚 **כרסום קונטור:** {contour_tool} | פסיעות: {' ← '.join(passes)}")
+        st.warning(f"🪚 **כרסום קונטור:** {contour_tool} | פסיעות: {' ← '.join(passes) if passes else 'לא הוגדרו'}")
     
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, fillcolor="whitesmoke", line=dict(color="black", width=2), layer="below")
@@ -121,7 +124,6 @@ def plot_2d_pro(drills, geos, thickness, dx, dy, contour_tool, passes, filename)
     for bid, pts in geos.items():
         if len(pts) > 1:
             x_p, y_p = zip(*pts)
-            # חישוב מידות קונטור לריחוף
             c_dx, c_dy = max(x_p) - min(x_p), max(y_p) - min(y_p)
             fig.add_trace(go.Scatter(
                 x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2),
@@ -145,6 +147,7 @@ def plot_2d_pro(drills, geos, thickness, dx, dy, contour_tool, passes, filename)
             )
         ))
 
+    # תיקון RTL בכותרות צירים באמצעות HTML
     fig.update_xaxes(title="ציר X (מילימטר)", range=[-100, 1400], gridcolor='rgba(0,0,0,0.1)', minor=dict(ticklen=4, showgrid=True), showline=True, mirror=True)
     fig.update_yaxes(title="ציר Y (מילימטר)", range=[-100, 3150], gridcolor='rgba(0,0,0,0.1)', scaleanchor="x", scaleratio=1, minor=dict(ticklen=4, showgrid=True), showline=True, mirror=True)
     
@@ -155,10 +158,10 @@ def plot_2d_pro(drills, geos, thickness, dx, dy, contour_tool, passes, filename)
     )
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
-st.sidebar.title("🛠️ ממשק דרוויש 40.8")
+st.sidebar.title("🛠️ ממשק דרוויש 40.9")
 nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
 rot = st.sidebar.checkbox("סובב Portrait (90°)", value=True)
-gz_off = st.sidebar.slider("כיול Z גלובלי (מילימטר)", -5.0, 5.0, 2.0, 0.1)
+gz_off = st.sidebar.slider("כיול Z גלובלי (מילימטר)", -5.0, 5.0, 0.0, 0.1)
 mx = st.sidebar.number_input("מרג'ין X (מילימטר)", value=0.0)
 my = st.sidebar.number_input("מרג'ין Y (מילימטר)", value=0.0)
 
