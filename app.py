@@ -5,17 +5,26 @@ import math
 import plotly.graph_objects as go
 
 # הגדרות דף
-st.set_page_config(page_title="Darwish CNC Pro 40.9", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 41.0", layout="wide")
 
-if 'tool_config' not in st.session_state:
-    st.session_state.tool_config = [
-        {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "צבע": "red", "תיקון_Z": 0.0},
-        {"קוטר": 8.0, "תיאור": "מקדח 8", "T_CNC": "T47", "צבע": "green", "תיקון_Z": -1.0},
-        {"קוטר": 10.0, "תיאור": "מקדח 10", "T_CNC": "T46", "צבע": "blue", "תיקון_Z": -0.5},
-        {"קוטר": 15.0, "תיאור": "מקדח 15", "T_CNC": "T49", "צבע": "cyan", "תיקון_Z": 0.0},
-        {"קוטר": 35.0, "תיאור": "מקדח 35", "T_CNC": "T6", "צבע": "orange", "תיקון_Z": -0.1},
-        {"קוטר": 5.0, "תיאור": "מקדח 5", "T_CNC": "T44", "צבע": "gray", "תיקון_Z": 0.0}
-    ]
+# מודול ניהול פרופילי מכונות
+if 'profiles' not in st.session_state:
+    st.session_state.profiles = {
+        "אבי": [
+            {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "צבע": "red", "תיקון_Z": 0.0},
+            {"קוטר": 8.0, "תיאור": "מקדח 8", "T_CNC": "T47", "צבע": "green", "תיקון_Z": -1.0},
+            {"קוטר": 10.0, "תיאור": "מקדח 10", "T_CNC": "T46", "צבע": "blue", "תיקון_Z": -0.5},
+            {"קוטר": 15.0, "תיאור": "מקדח 15", "T_CNC": "T49", "צבע": "cyan", "תיקון_Z": 0.0},
+            {"קוטר": 35.0, "תיאור": "מקדח 35", "T_CNC": "T6", "צבע": "orange", "תיקון_Z": -0.1}
+        ],
+        "מושיקו": [
+            {"קוטר": 12.0, "תיאור": "כרסום 12", "T_CNC": "T10", "צבע": "purple", "תיקון_Z": 0.0},
+            {"קוטר": 5.0, "תיאור": "מקדח 5", "T_CNC": "T101", "צבע": "yellow", "תיקון_Z": 0.0}
+        ]
+    }
+
+if 'current_machine' not in st.session_state:
+    st.session_state.current_machine = "אבי"
 
 def get_safe_float(key, block, default=0.0):
     match = re.search(f'{key}="([^"]*)"', block)
@@ -29,19 +38,26 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
     
-    # הרחבת זיהוי כרסום קונטור (חיפוש בבלוקים 130 וגם 101)
+    # סריקה עמוקה לזיהוי כרסום (בלוקים 101, 130, 131)
     contour_tool = "לא זוהה"
     passes = []
-    # חיפוש רחב יותר בפורמט MPR
-    contour_match = re.search(r'<(130|101)(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL)
+    # חיפוש רחב בכל סוגי בלוקי העיבוד
+    contour_match = re.search(r'<(130|131|101|133)(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL)
     if contour_match:
         c_block = contour_match.group(2)
-        c_dia = get_safe_float('DU', c_block)
-        if c_dia == 0: c_dia = get_safe_float('DI', c_block) # תמיכה בפורמט DI
-        contour_tool = f"כרסום {c_dia:.0f}" if c_dia > 0 else "כרסום סטנדרט"
-        ti_total = get_safe_float('TI', c_block)
+        # ניסיון לשלוף קוטר ממספר פרמטרים אפשריים ב-MPR
+        c_dia = max(get_safe_float('DU', c_block), get_safe_float('DI', c_block), get_safe_float('D', c_block))
+        ti_total = max(get_safe_float('TI', c_block), get_safe_float('T', c_block))
+        
+        if c_dia > 0:
+            contour_tool = f"כרסום {c_dia:.0f}"
+        else:
+            # אם לא נמצא קוטר מספרי, חיפוש שם כלי (Tool Name)
+            t_name = re.search(r'T_CNC="([^"]*)"', c_block)
+            contour_tool = t_name.group(1) if t_name else "כרסום לא מוגדר"
+            
         if ti_total > 0:
-            passes = [f"{ti_total/2:.2f} מילימטר", f"{ti_total + 2:.2f} מילימטר"]
+            passes = [f"{ti_total/2:.2f} מילימטר", f"{ti_total + 2.0:.2f} מילימטר"]
 
     geos = {}
     parts = re.split(r'\](\d+)', mpr_text)
@@ -57,17 +73,15 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
     for m in re.finditer(r'<102(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         b = m.group(1)
         xa, ya, ti, du = [get_safe_float(k, b) for k in ['XA', 'YA', 'TI', 'DU']]
-        an, ab, wi = int(get_safe_float('AN', b, 1)), get_safe_float('AB', b), get_safe_float('WI', b)
         conf = dia_map.get(round(du, 1))
         if conf is None: continue
-        # תיקון לוגיקת Z: פלוס בכיול מקטין חדירה (מרחיק מהשולחן), מינוס מגדיל חדירה (מעמיק)
+        # לוגיקת Z: פלוס מרחיק מהשולחן (רדוד), מינוס מקרב לשולחן (עמוק)
         f_z = (thickness - ti) + global_z_off - conf.get("תיקון_Z", 0.0)
-        for i in range(an):
-            raw_drills.append({
-                'x': xa + i*ab*math.cos(math.radians(wi)), 'y': ya + i*ab*math.sin(math.radians(wi)),
-                'z': f_z, 't': conf['T_CNC'], 'desc': conf['תיאור'], 'dia': du, 'color': conf['צבע'], 'group': m.start()
-            })
+        raw_drills.append({
+            'x': xa, 'y': ya, 'z': f_z, 't': conf['T_CNC'], 'desc': conf['תיאור'], 'dia': du, 'color': conf['צבע']
+        })
 
+    # סיבוב ונסטינג
     if rotate_90:
         for d in raw_drills: d['x'], d['y'] = -d['y'], d['x']
         for pts in geos.values():
@@ -75,7 +89,6 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
 
     all_x = [d['x'] for d in raw_drills] + [p[0] for pts in geos.values() for p in pts]
     all_y = [d['y'] for d in raw_drills] + [p[1] for pts in geos.values() for p in pts]
-    
     dx, dy = 0.0, 0.0
     if all_x and all_y:
         min_x, min_y = min(all_x), min(all_y)
@@ -101,7 +114,7 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
 
     nc, ln, last_t = [f"G90 G54"], 10, ""
     for t_name in sorted(list(set(d['t'] for d in raw_drills))):
-        subset = sorted([dr for dr in raw_drills if dr['t']==t_name], key=lambda k: (k['group'], k['x']))
+        subset = [dr for dr in raw_drills if dr['t']==t_name]
         for d in subset:
             if d['t'] != last_t:
                 nc.extend([f"N{ln} {d['t']} M06", f"N{ln+5} G43 H{d['t'][1:]} S4000 M03"])
@@ -112,11 +125,9 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y
 
 def plot_2d_pro(drills, geos, thickness, dx, dy, contour_tool, passes, filename):
     st.markdown(f"### 📄 קובץ: {filename}")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.info(f"📏 **מידות חלק:** {dx:.2f} × {dy:.2f} מילימטר | עובי: {thickness:.2f} מילימטר")
-    with col2:
-        st.warning(f"🪚 **כרסום קונטור:** {contour_tool} | פסיעות: {' ← '.join(passes) if passes else 'לא הוגדרו'}")
+    c1, c2 = st.columns(2)
+    c1.info(f"📏 **מידות:** {dx:.2f} × {dy:.2f} מילימטר | עובי: {thickness:.2f} מילימטר")
+    c2.warning(f"🪚 **קונטור:** {contour_tool} | פסיעות: {' ← '.join(passes) if passes else 'לא הוגדרו'}")
     
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, fillcolor="whitesmoke", line=dict(color="black", width=2), layer="below")
@@ -128,7 +139,7 @@ def plot_2d_pro(drills, geos, thickness, dx, dy, contour_tool, passes, filename)
             fig.add_trace(go.Scatter(
                 x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2),
                 name=f"קונטור {bid}",
-                text=f"מידות חלק: {c_dx:.2f} × {c_dy:.2f} מילימטר",
+                text=f"חלק: {c_dx:.2f} × {c_dy:.2f} מילימטר",
                 hoverinfo="text+name"
             ))
 
@@ -140,44 +151,57 @@ def plot_2d_pro(drills, geos, thickness, dx, dy, contour_tool, passes, filename)
             text=[d['desc']], 
             customdata=[[d['t'], actual_depth]],
             hovertemplate=(
-                "<span style='font-size:18px;'><b>%{customdata[0]}</b></span><br>"
-                "תיאור כלי: <b>%{text}</b><br>"
-                "עומק חדירה: %{customdata[1]:.2f} מילימטר<br>"
-                "מיקום: X=%{x:.2f}, Y=%{y:.2f}<extra></extra>"
+                "<span style='font-size:16px;'><b>%{customdata[0]}</b></span><br>"
+                "כלי: %{text}<br>"
+                "עומק: %{customdata[1]:.2f} מילימטר<extra></extra>"
             )
         ))
 
-    # תיקון RTL בכותרות צירים באמצעות HTML
-    fig.update_xaxes(title="ציר X (מילימטר)", range=[-100, 1400], gridcolor='rgba(0,0,0,0.1)', minor=dict(ticklen=4, showgrid=True), showline=True, mirror=True)
-    fig.update_yaxes(title="ציר Y (מילימטר)", range=[-100, 3150], gridcolor='rgba(0,0,0,0.1)', scaleanchor="x", scaleratio=1, minor=dict(ticklen=4, showgrid=True), showline=True, mirror=True)
-    
-    fig.update_layout(
-        title=f"תצוגת מכונה - {filename}",
-        width=950, height=900, template="plotly_white", showlegend=False,
-        hoverlabel=dict(bgcolor="white", bordercolor="black", font_size=14, font_color="black", align="right")
-    )
-    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
+    fig.update_xaxes(title="ציר X (מילימטר)", range=[-100, 1400], gridcolor='rgba(0,0,0,0.1)', showline=True, mirror=True)
+    fig.update_yaxes(title="ציר Y (מילימטר)", range=[-100, 3150], gridcolor='rgba(0,0,0,0.1)', scaleanchor="x", scaleratio=1, showline=True, mirror=True)
+    fig.update_layout(width=900, height=850, template="plotly_white", showlegend=False, hoverlabel=dict(bgcolor="white", font_size=14))
+    st.plotly_chart(fig, use_container_width=True)
 
-st.sidebar.title("🛠️ ממשק דרוויש 40.9")
+# Sidebar - הגדרות ותפעול
+st.sidebar.title("🛠️ ממשק דרוויש 41.0")
+
+# בורר מכונות
+machine_names = list(st.session_state.profiles.keys())
+selected_machine = st.sidebar.selectbox("בחר מכונה (פרופיל):", machine_names, index=machine_names.index(st.session_state.current_machine))
+st.session_state.current_machine = selected_machine
+
+st.sidebar.markdown("---")
 nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
 rot = st.sidebar.checkbox("סובב Portrait (90°)", value=True)
 gz_off = st.sidebar.slider("כיול Z גלובלי (מילימטר)", -5.0, 5.0, 0.0, 0.1)
 mx = st.sidebar.number_input("מרג'ין X (מילימטר)", value=0.0)
 my = st.sidebar.number_input("מרג'ין Y (מילימטר)", value=0.0)
 
-st.markdown("### 🧰 הגדרות מכונה וכלים")
-with st.expander("ערוך טבלת כלים (עבור אבי/מושיקו)"):
-    edited_df = st.data_editor(pd.DataFrame(st.session_state.tool_config), num_rows="dynamic")
-    if st.button("שמור הגדרות כלים"):
-        st.session_state.tool_config = edited_df.to_dict('records')
+# עריכת כלים וניהול פרופילים
+st.markdown(f"### 🧰 הגדרות מכונה: {st.session_state.current_machine}")
+with st.expander("ערוך רשימת כלים וכיולים למכונה זו"):
+    current_tools = st.session_state.profiles[st.session_state.current_machine]
+    edited_df = st.data_editor(pd.DataFrame(current_tools), num_rows="dynamic")
+    
+    col_a, col_b = st.columns(2)
+    if col_a.button("שמור שינויים למכונה הנוכחית"):
+        st.session_state.profiles[st.session_state.current_machine] = edited_df.to_dict('records')
+        st.success(f"הגדרות המכונה '{st.session_state.current_machine}' נשמרו.")
+    
+    new_machine_name = col_b.text_input("שם מכונה חדשה לשמירה:", value="")
+    if col_b.button("שמור כמכונה חדשה"):
+        if new_machine_name:
+            st.session_state.profiles[new_machine_name] = edited_df.to_dict('records')
+            st.session_state.current_machine = new_machine_name
+            st.rerun()
 
 uploaded = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
         nc, drills, geos, thick, dx, dy, c_tool, pss = convert_logic(
             f.getvalue().decode('utf-8', errors='ignore'), 
-            pd.DataFrame(st.session_state.tool_config), 
+            pd.DataFrame(st.session_state.profiles[st.session_state.current_machine]), 
             rot, nest, mx, my, gz_off
         )
         plot_2d_pro(drills, geos, thick, dx, dy, c_tool, pss, f.name)
-        st.download_button(f"📂 הורד NC: {f.name.split('.')[0]}", nc, f.name.replace(".mpr", ".nc"))
+        st.download_button(f"📂 הורד NC עבור {st.session_state.current_machine}", nc, f.name.replace(".mpr", f"_{st.session_state.current_machine}.nc"))
