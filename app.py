@@ -5,9 +5,9 @@ import math
 import plotly.graph_objects as go
 
 # הגדרות דף
-st.set_page_config(page_title="Darwish CNC Pro 40.1", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 40.2", layout="wide")
 
-# טבלת כלים ברירת מחדל
+# טבלת כלים
 DEFAULT_TOOLS = [
     {"קוטר": 6.0, "תיאור": "כרסום 6", "T_CNC": "T2", "S": 18000, "F": 6000, "תיקון_Z": 0.0, "צבע": "red"},
     {"קוטר": 8.0, "תיאור": "מקדח 8", "T_CNC": "T47", "S": 4000, "F": 2000, "תיקון_Z": -1.0, "צבע": "green"},
@@ -25,7 +25,7 @@ def get_safe_float(key, block, default=0.0):
         nums = re.findall(r'[\d.-]+', match.group(1))
         return float(nums[0]) if nums else default
 
-def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_off):
+def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin_x, margin_y, global_z_off):
     dia_map = {round(float(row['קוטר']), 1): row for _, row in tool_df.iterrows()}
     thickness = get_safe_float('t', mpr_text, 19.0)
     
@@ -53,35 +53,41 @@ def convert_logic(mpr_text, tool_df, rotate_90, zero_nesting, margin, global_z_o
                 'z': f_z, 't': conf['T_CNC'], 'desc': conf['תיאור'], 'dia': du, 'color': conf['צבע'], 'group': m.start()
             })
 
-    # שלב 1: סיבוב מתמטי
+    # שלב 1: סיבוב (אם נבחר)
     if rotate_90:
-        for d in raw_drills:
-            d['x'], d['y'] = -d['y'], d['x']
+        for d in raw_drills: d['x'], d['y'] = -d['y'], d['x']
         for pts in geos.values():
-            for p in pts:
-                p[0], p[1] = -p[1], p[0]
+            for p in pts: p[0], p[1] = -p[1], p[0]
 
-    # שלב 2: תיקון רצפה אפס (חובה למניעת ערכים שליליים)
+    # שלב 2: הגנת "רצפה אפס" - חובה למניעת ערכים שליליים תמיד
     all_x = [d['x'] for d in raw_drills] + [p[0] for pts in geos.values() for p in pts]
     all_y = [d['y'] for d in raw_drills] + [p[1] for pts in geos.values() for p in pts]
-    
     if all_x and all_y:
         min_x, min_y = min(all_x), min(all_y)
-        # תמיד להביא את הנקודה הכי שלילית לאפס לפחות
         shift_x = abs(min_x) if min_x < 0 else 0
         shift_y = abs(min_y) if min_y < 0 else 0
         for d in raw_drills: d['x'] += shift_x; d['y'] += shift_y
         for pts in geos.values():
             for p in pts: p[0] += shift_x; p[1] += shift_y
 
-    # שלב 3: הצמדה לפינה (Nesting) - גורר הכל ל-(0,0) פלוס Margin
+    # שלב 3: הצמדה לפינה (Nesting) - אם נבחר, דוחף לאפס לפני המרג'ין
     if zero_nesting:
         cur_x = [d['x'] for d in raw_drills] + [p[0] for pts in geos.values() for p in pts]
         cur_y = [d['y'] for d in raw_drills] + [p[1] for pts in geos.values() for p in pts]
-        mx, my = min(cur_x), min(cur_y)
-        for d in raw_drills: d['x'] = d['x'] - mx + margin; d['y'] = d['y'] - my + margin
-        for pts in geos.values():
-            for p in pts: p[0] = p[0] - mx + margin; p[1] = p[1] - my + margin
+        if cur_x and cur_y:
+            mx, my = min(cur_x), min(cur_y)
+            for d in raw_drills: d['x'] -= mx; d['y'] -= my
+            for pts in geos.values():
+                for p in pts: p[0] -= mx; p[1] -= my
+
+    # שלב 4: יישום המרג'ין (X ו-Y בנפרד) - פועל תמיד כתוספת גלובלית
+    for d in raw_drills:
+        d['x'] += margin_x
+        d['y'] += margin_y
+    for pts in geos.values():
+        for p in pts:
+            p[0] += margin_x
+            p[1] += margin_y
 
     # יצירת קוד NC
     nc, ln, last_t = [f"G90 G54"], 10, ""
@@ -101,11 +107,10 @@ def plot_2d_pro(drills, geos, thickness):
     # משטח המכונה
     fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, fillcolor="whitesmoke", line=dict(color="black", width=2), layer="below")
     
-    # הגדרת סרגל ורשת
-    fig.update_xaxes(range=[-100, 1400], dtick=500, gridcolor='rgba(0,0,0,0.1)', title="ציר X (מילימטר)")
-    fig.update_yaxes(range=[-100, 3150], dtick=500, gridcolor='rgba(0,0,0,0.1)', title="ציר Y (מילימטר)", scaleanchor="x", scaleratio=1)
-
-    # הוספת קווי 100 ממ עדינים
+    # הגדרות צירים וסרגל
+    fig.update_xaxes(range=[-150, 1450], dtick=500, gridcolor='rgba(0,0,0,0.1)', title="ציר X (מילימטר)")
+    fig.update_yaxes(range=[-150, 3200], dtick=500, gridcolor='rgba(0,0,0,0.1)', title="ציר Y (מילימטר)", scaleanchor="x", scaleratio=1)
+    
     for x in range(0, 1400, 100): fig.add_vline(x=x, line=dict(color="rgba(0,0,0,0.03)", width=1))
     for y in range(0, 3100, 100): fig.add_hline(y=y, line=dict(color="rgba(0,0,0,0.03)", width=1))
 
@@ -115,7 +120,7 @@ def plot_2d_pro(drills, geos, thickness):
             x_p, y_p = zip(*pts)
             fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2), hoverinfo='skip'))
 
-    # קדחים
+    # קדחים עם Hover מתוקן
     for d in drills:
         actual_depth = thickness - d['z']
         fig.add_trace(go.Scatter(
@@ -126,18 +131,21 @@ def plot_2d_pro(drills, geos, thickness):
             hovertemplate="<b>%{text}</b><br>כלי: %{customdata[0]}<br>עומק: %{customdata[1]:.2f} ממ<br>X=%{x:.2f}, Y=%{y:.2f}<extra></extra>"
         ))
 
-    fig.update_layout(title="Darwish CNC 40.1 - Ruler & Zero Fix", width=950, height=850, template="plotly_white", showlegend=False)
+    fig.update_layout(title="Darwish CNC 40.2 - Dual Margin & Safety Fix", width=950, height=850, template="plotly_white", showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-# Sidebar
-st.sidebar.title("🛠️ ממשק אבי CNC 40.1")
+# Sidebar UI
+st.sidebar.title("🛠️ ממשק אבי CNC 40.2")
+st.sidebar.markdown("---")
 nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
 rot = st.sidebar.checkbox("סובב Portrait (90°)", value=True)
-mar = st.sidebar.number_input("Margin (מילימטר)", value=0.0)
+st.sidebar.markdown("**מרווח הגנה (Margin):**")
+mx = st.sidebar.number_input("ציר X (ממ)", value=0.0)
+my = st.sidebar.number_input("ציר Y (ממ)", value=0.0)
 
-uploaded = st.file_uploader("טען MPR", accept_multiple_files=True)
+uploaded = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
-        nc, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mar, 2.0)
+        nc, drills, geos, thick = convert_logic(f.getvalue().decode('utf-8', errors='ignore'), pd.DataFrame(DEFAULT_TOOLS), rot, nest, mx, my, 2.0)
         plot_2d_pro(drills, geos, thick)
         st.download_button(f"📂 הורד {f.name.replace('.mpr', '.nc')}", nc, f.name.replace(".mpr", ".nc"))
