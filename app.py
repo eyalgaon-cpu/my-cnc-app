@@ -5,9 +5,9 @@ import math
 import plotly.graph_objects as go
 
 # הגדרות דף
-st.set_page_config(page_title="Darwish CNC Pro 41.20 - Avi Edition", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro 41.22 - Avi Edition", layout="wide")
 
-# אתחול פרופיל אבי המלא - מעודכן לפי הטבלה הסופית
+# אתחול פרופיל אבי המלא - הגרסה המורחבת (200 שורות)
 if 'profiles' not in st.session_state:
     st.session_state.profiles = {
         "אבי": {
@@ -46,7 +46,6 @@ def convert_logic(mpr_text, machine_config, rotate_90, zero_nesting, margin_x, m
     raw_drills = []
     nc = ["% ", "(CONVERTED BY DARWISH PRO 2026)", "G90 G54 G21"]
     
-    # 1. חילוץ גאומטריות מתוך הקובץ
     geos = {}
     parts = re.split(r'\](\d+)', mpr_text)
     for i in range(1, len(parts), 2):
@@ -58,31 +57,25 @@ def convert_logic(mpr_text, machine_config, rotate_90, zero_nesting, margin_x, m
             if x_m and y_m: pts.append([float(x_m.group(1)), float(y_m.group(1))])
         if pts: geos[parts[i]] = pts
 
-    # 2. עיבוד קידוחים (<102)
     for m in re.finditer(r'<102(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         b = m.group(1)
         xa, ya, ti = [get_safe_float(k, b) for k in ['XA', 'YA', 'TI']]
         t_mpr = re.search(r'DU="([^"]*)"', b).group(1)
         target_t = tool_map.get(t_mpr, "T44")
-        
-        # בקידוח: Z ב-NC הוא עובי פחות עומק החדירה (TI)
         f_z = (thickness - ti) + global_z_off
         raw_drills.append({'x': xa, 'y': ya, 'z': f_z, 't': target_t, 'dia': float(t_mpr), 'mpr_id': t_mpr})
 
-    # 3. עיבוד כרסומים (<105 / <130)
     milling_ops = []
     for m in re.finditer(r'<(105|130)(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         block_content = m.group(2)
         tno_match = re.search(r'TNO="([^"]*)"', block_content)
         tno = tno_match.group(1) if tno_match else "142"
-        za = get_safe_float('ZA', block_content) # ZA הוא הגובה מהשולחן
+        za = get_safe_float('ZA', block_content) 
         ea_match = re.search(r'EA="(\d+):', block_content)
         geo_id = ea_match.group(1) if ea_match else None
-        
         if geo_id in geos:
             milling_ops.append({'geo_id': geo_id, 'tno': tno, 'z': za, 'pts': [p[:] for p in geos[geo_id]]})
 
-    # החלת טרנספורמציות (סיבוב/צמידה)
     if rotate_90:
         for d in raw_drills: d['x'], d['y'] = -d['y'], d['x']
         for op in milling_ops:
@@ -100,16 +93,13 @@ def convert_logic(mpr_text, machine_config, rotate_90, zero_nesting, margin_x, m
         else: dx, dy = 0, 0
     else: dx, dy = 0, 0
 
-    # כתיבת קוד NC
     last_t = ""
     for d in raw_drills:
         if d['t'] != last_t:
             nc.append(f"M6 {d['t']} (DRILL {d['dia']}mm)")
             nc.append("M3 S18000")
             last_t = d['t']
-        nc.extend([f"G0 X{d['x'] + margin_x:.3f} Y{d['y'] + margin_y:.3f}", 
-                   f"G1 Z{d['z']:.3f} F1000", 
-                   f"G0 Z{thickness+20}"])
+        nc.extend([f"G0 X{d['x'] + margin_x:.3f} Y{d['y'] + margin_y:.3f}", f"G1 Z{d['z']:.3f} F1000", f"G0 Z{thickness+20}"])
 
     for op in milling_ops:
         target_t = tool_map.get(op['tno'], "T2")
@@ -117,12 +107,10 @@ def convert_logic(mpr_text, machine_config, rotate_90, zero_nesting, margin_x, m
             nc.append(f"M6 {target_t} (MILL TNO {op['tno']})")
             nc.append("M3 S16000")
             last_t = target_t
-        
         pts = op['pts']
         nc.append(f"G0 X{pts[0][0] + margin_x:.3f} Y{pts[0][1] + margin_y:.3f}")
         nc.append(f"G1 Z{op['z']:.3f} F2000")
-        for p in pts[1:]:
-            nc.append(f"G1 X{p[0] + margin_x:.3f} Y{p[1] + margin_y:.3f} F3000")
+        for p in pts[1:]: nc.append(f"G1 X{p[0] + margin_x:.3f} Y{p[1] + margin_y:.3f} F3000")
         nc.append(f"G0 Z{thickness+20}")
 
     nc.append("M30\n%")
@@ -131,68 +119,56 @@ def convert_logic(mpr_text, machine_config, rotate_90, zero_nesting, margin_x, m
 def plot_2d_pro(drills, milling_ops, thickness, dx, dy, filename):
     st.info(f"📏 מידות חלק: {dx:.2f} × {dy:.2f} מילימטר | עובי: {thickness:.2f} מילימטר")
     fig = go.Figure()
+    fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, fillcolor="whitesmoke", line=dict(color="black", width=2), layer="below")
     
-    # משטח המכונה הקבוע (1300x3050)
-    fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, 
-                 fillcolor="whitesmoke", line=dict(color="black", width=2), layer="below")
-    
-    # שרטוט מסלולי כרסום
     for op in milling_ops:
         x_p, y_p = zip(*op['pts'])
-        fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', 
-                                line=dict(color='red', width=2), name=f"כלי {op['tno']} (Z={op['z']})"))
+        fig.add_trace(go.Scatter(x=x_p, y=y_p, mode='lines', line=dict(color='red', width=2), name=f"כלי {op['tno']}"))
     
-    # שרטוט קדחים
     for d in drills:
         fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers',
-                                marker=dict(size=d['dia'], sizemode='diameter', color='blue', line=dict(width=1, color='black')),
-                                name=f"מקדח {d['dia']}"))
+                                marker=dict(size=d['dia'], sizemode='diameter', color='blue', line=dict(width=1, color='black'))))
 
     fig.update_xaxes(title="ציר X (מילימטר)", range=[-50, 1400], showline=True, mirror=True)
     fig.update_yaxes(title="ציר Y (מילימטר)", range=[-50, 3200], scaleanchor="x", scaleratio=1, showline=True, mirror=True)
-    fig.update_layout(width=850, height=1000, template="plotly_white", showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    
+    # התיקון: הפעלת Pan וזום עם הגלגלת
+    fig.update_layout(width=850, height=1000, template="plotly_white", dragmode='pan', showlegend=False)
+    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
-# --- ממשק משתמש ---
-st.sidebar.title("🛠️ Darwish PRO 41.20")
-sel_m = st.sidebar.selectbox("מכונה:", list(st.session_state.profiles.keys()))
-cfg = st.session_state.profiles[sel_m]
+# --- UI Sidebar ---
+st.sidebar.title("🛠️ Darwish PRO 41.22")
+cfg = st.session_state.profiles["אבי"]
 
-st.sidebar.markdown("---")
 nest = st.sidebar.checkbox("צמד לפינה (Nesting)", value=True)
 rot = st.sidebar.checkbox("סובב ב-90°", value=False)
-m_x = st.sidebar.number_input("מרווח X (מ\"מ)", value=0.0)
-m_y = st.sidebar.number_input("מרווח Y (מ\"מ)", value=0.0)
-gz_off = st.sidebar.slider("כיול Z גלובלי (מ\"מ)", -3.0, 3.0, 0.0, 0.1)
+m_x = st.sidebar.number_input("מרווח X (מילימטר)", value=0.0)
+m_y = st.sidebar.number_input("מרווח Y (מילימטר)", value=0.0)
+gz_off = st.sidebar.slider("כיול Z (מילימטר)", -3.0, 3.0, 0.0, 0.1)
 
 uploaded = st.file_uploader("טען קבצי MPR להמרה", accept_multiple_files=True)
 
 if uploaded:
     for f in uploaded:
         mpr_content = f.getvalue().decode('utf-8', errors='ignore')
-        
-        # זיהוי כלים אוטומטי מהקובץ לצורך מיפוי
         raw_tools = re.findall(r'(?:DU|TNO)="([^"]*)"', mpr_content)
         detected_tools = sorted(list(set(raw_tools)))
         
         with st.sidebar.expander(f"🔗 מיפוי כלים: {f.name}", expanded=True):
             current_tool_map = {}
             for t_id in detected_tools:
-                # לוגיקת הצעה אוטומטית חכמה (לפי הטבלה של אבי)
-                auto_idx = 1 # ברירת מחדל T2
-                if t_id == "130": auto_idx = 6 # T13
-                elif t_id == "128": auto_idx = 3 # T4
-                elif t_id == "158": auto_idx = 2 # T3
-                elif t_id == "8.0000" or t_id == "8": auto_idx = 12 # T47
-                elif t_id == "35.0000" or t_id == "35": auto_idx = 15 # T6
-                elif t_id == "15.0000" or t_id == "15": auto_idx = 14 # T49
-                elif t_id == "3.0000" or t_id == "3": auto_idx = 8 # T48
+                auto_idx = 1
+                if t_id == "130": auto_idx = 6 
+                elif t_id == "128": auto_idx = 3 
+                elif t_id == "158": auto_idx = 2 
+                elif t_id in ["8.0000", "8"]: auto_idx = 12 
+                elif t_id in ["35.0000", "35"]: auto_idx = 15 
+                elif t_id in ["15.0000", "15"]: auto_idx = 14 
+                elif t_id in ["3.0000", "3"]: auto_idx = 8 
                 
                 current_tool_map[t_id] = st.selectbox(
-                    f"כלי MPR {t_id} -> אבי:", 
-                    [t['T_CNC'] for t in cfg['tools']], 
-                    index=min(auto_idx, len(cfg['tools'])-1), 
-                    key=f"map_{f.name}_{t_id}"
+                    f"MPR {t_id} -> אבי:", [t['T_CNC'] for t in cfg['tools']], 
+                    index=min(auto_idx, len(cfg['tools'])-1), key=f"m_{f.name}_{t_id}"
                 )
 
         nc_res, drls, ops, thick, dx, dy = convert_logic(mpr_content, cfg, rot, nest, m_x, m_y, gz_off, current_tool_map)
