@@ -4,8 +4,8 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-# Darwish CNC Pro 41.90 - Advanced Hierarchical Pass Control
-st.set_page_config(page_title="Darwish CNC Pro 41.90", layout="wide")
+# Darwish CNC Pro 42.00 - Robust Hierarchical Control
+st.set_page_config(page_title="Darwish CNC Pro 42.00", layout="wide")
 
 # אתחול פרופיל אבי (Ground Truth - Tool Mapping Final V2)
 if 'profiles' not in st.session_state:
@@ -29,7 +29,6 @@ if 'profiles' not in st.session_state:
         }
     }
 
-# פונקציות ליבה (שימור מגרסה 41.3)
 def get_dist(p1, p2): return math.sqrt((p1['x'] - p2['x'])**2 + (p1['y'] - p2['y'])**2)
 
 def optimize_path(points):
@@ -46,12 +45,11 @@ def get_safe_float(key, block, default=0.0):
     try: return float(match.group(1))
     except: return default
 
-def convert_logic_v419(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map, local_offsets, custom_passes):
+def convert_logic_v42(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map, local_offsets, custom_passes):
     thickness = get_safe_float('t', mpr_text, 16.0)
     raw_drills = []
     geos = {}
     
-    # חילוץ גיאומטריות
     parts = re.split(r'\](\d+)', mpr_text)
     for i in range(1, len(parts), 2):
         if parts[i] == "1": continue 
@@ -61,7 +59,6 @@ def convert_logic_v419(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map
             if x_m and y_m: pts.append([float(x_m.group(1)), float(y_m.group(1))])
         if pts: geos[parts[i]] = pts
 
-    # עיבוד קדחים (שימור מגרסה 41.3 + BV5 לוגיקה)
     for m in re.finditer(r'<102(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         b = m.group(1); xa, ya, ti = [get_safe_float(k, b) for k in ['XA', 'YA', 'TI']]
         t_mpr = (re.search(r'DU="([^"]*)"', b).group(1) if re.search(r'DU="([^"]*)"', b) else "5")
@@ -71,22 +68,20 @@ def convert_logic_v419(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map
         if t_mpr in ["BV5", "5"]: t_cnc = "T45" if f_z <= 0.2 else "T44"
         raw_drills.append({'x': xa, 'y': ya, 'z': f_z, 't': t_cnc})
 
-    # עיבוד כרסומים (זיהוי קבוצות לפי גיאומטריה)
-    milling_groups = {} # Key: (geo_id, t_cnc)
+    milling_groups = {} 
     for m in re.finditer(r'<(105|130)(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         bc = m.group(2); tno = re.search(r'TNO="([^"]*)"', bc).group(1) if re.search(r'TNO="([^"]*)"', bc) else "142"
         l_off = local_offsets.get(tno, 0.0)
         za = get_safe_float('ZA', bc) + global_z_off + l_off
         ea = re.search(r'EA="(\d+):', bc); geo_id = ea.group(1) if ea else None
         
-        if geo_id in geos:
+        if geo_id and geo_id in geos:
             t_cnc = tool_map.get(tno, "T2")
             key = (geo_id, t_cnc)
             if key not in milling_groups:
-                milling_groups[key] = {'tno': tno, 't_cnc': t_cnc, 'passes': [], 'pts': [p[:] for p in geos[geo_id]]}
+                milling_groups[key] = {'tno': tno, 't_cnc': t_cnc, 'passes': [], 'pts': [p[:] for p in geos[geo_id]], 'geo_id': geo_id}
             milling_groups[key]['passes'].append(round(za, 3))
 
-    # טרנספורמציות ומיקום
     if rotate_90:
         for d in raw_drills: d['x'], d['y'] = -d['y'], d['x']
         for g in milling_groups.values():
@@ -101,24 +96,20 @@ def convert_logic_v419(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map
     for g in milling_groups.values():
         for p in g['pts']: p[0] -= mx; p[1] -= my
 
-    # יצירת NC (מיון: T2 אחרון, אופטימיזציית קדחים)
-    nc = ["%", "(NC DARWISH 41.9)", "G90 G54 G21"]; timeline = []; out_idx = 1
+    nc = ["%", "(NC DARWISH 42.0)", "G90 G54 G21"]; timeline = []; out_idx = 1
     
-    # קדחים
     dr_tools = {}
     for d in raw_drills: dr_tools.setdefault(d['t'], []).append(d)
     for t_id in sorted(dr_tools.keys()):
-        nc.append(f"M6 {t_id}")
-        timeline.append({"op": out_idx, "tool": t_id, "type": "Drill"})
+        nc.append(f"M6 {t_id}"); timeline.append({"op": out_idx, "tool": t_id, "type": "Drill"})
         for d in optimize_path(dr_tools[t_id]):
             d['disp_num'] = out_idx
             nc.extend([f"G0 X{d['x']:.3f} Y{d['y']:.3f}", f"G1 Z{d['z']:.3f} F1000", f"G0 Z{thickness+20}"])
         out_idx += 1
 
-    # כרסומים (Smart Grouping)
     mill_by_tool = {}
-    for (gid, tcnc), data in milling_groups.items():
-        mill_by_tool.setdefault(tcnc, []).append(data)
+    for data in milling_groups.values():
+        mill_by_tool.setdefault(data['t_cnc'], []).append(data)
     
     sorted_tools = [t for t in sorted(mill_by_tool.keys()) if t != "T2"]
     if "T2" in mill_by_tool: sorted_tools.append("T2")
@@ -127,8 +118,7 @@ def convert_logic_v419(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map
         nc.append(f"M6 {t_id}")
         for group in mill_by_tool[t_id]:
             group['disp_num'] = out_idx
-            # שימוש בפסיעות ידניות אם קיימות, אחרת המקור (מסודר מלמעלה למטה)
-            g_key = f"{group['t_cnc']}_{group['tno']}_{out_idx}"
+            g_key = f"{group['t_cnc']}_{group['tno']}_{group['geo_id']}"
             active_passes = sorted(custom_passes.get(g_key, group['passes']), reverse=True)
             group['active_passes'] = active_passes
             
@@ -144,26 +134,24 @@ def convert_logic_v419(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map
     nc.append("M30\n%")
     return "\n".join(nc), raw_drills, list(milling_groups.values()), thickness, timeline
 
-def plot_v419(drills, milling_list, thickness, cfg, tool_map):
+def plot_v42(drills, milling_list, thickness, cfg, tool_map):
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, y0=0, x1=3050, y1=1300, line=dict(color="black", width=2), layer="below")
     
     for g in milling_list:
         t_info = next((t for t in cfg['tools'] if t['T_CNC'] == g['t_cnc']), {"צבע": "red", "תיאור": "כרסום"})
         xp, yp = zip(*g['pts'])
-        
-        p_list = g.get('active_passes', g['passes'])
-        p_list = sorted(p_list, reverse=True) # מהרדוד לעמוק
+        p_list = sorted(g.get('active_passes', g['passes']), reverse=True)
         
         if len(p_list) > 1:
-            pass_info = "".join([f"<br>פסיעה {'ראשונה' if i==0 else 'שנייה' if i==1 else 'שלישית' if i==2 else f'מספר {i+1}'} - {round(thickness - p, 2)} מילימטר (מהחלק העליון)" for i, p in enumerate(p_list)])
+            pass_info = "".join([f"<br>פסיעה {'ראשונה' if i==0 else 'שנייה' if i==1 else f'מספר {i+1}'} - {round(thickness - p, 2)} מילימטר (מהחלק העליון)" for i, p in enumerate(p_list)])
         else:
             pass_info = f"<br>עומק כרסום: {round(thickness - p_list[0], 2)} מילימטר (מהחלק העליון)"
 
         fig.add_trace(go.Scatter(
             x=xp, y=yp, mode='lines', line=dict(color=t_info['צבע'], width=2),
-            name=f"Op {g['disp_num']}",
-            hovertemplate=f"<b>פעולה {g['disp_num']}</b><br>כלי: {g['t_cnc']} ({t_info['תיאור']}){pass_info}<extra></extra>"
+            name=f"Op {g.get('disp_num', '?')}",
+            hovertemplate=f"<b>פעולה {g.get('disp_num', '?')}</b><br>כלי: {g['t_cnc']} ({t_info['תיאור']}){pass_info}<extra></extra>"
         ))
     
     for d in drills:
@@ -175,7 +163,7 @@ def plot_v419(drills, milling_list, thickness, cfg, tool_map):
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
 # --- UI ---
-st.sidebar.title("🛠️ Darwish PRO 41.90")
+st.sidebar.title("🛠️ Darwish PRO 42.00")
 cfg = st.session_state.profiles["אבי"]
 nest = st.sidebar.checkbox("Nesting (יישור ל-0,0)", value=False)
 rot = st.sidebar.checkbox("סובב 90°", value=False)
@@ -191,42 +179,40 @@ if uploaded:
             t_map = {}; l_offsets = {}
             for t_id in detected_ids:
                 col1, col2 = st.columns([2, 1])
-                # מיפוי אוטומטי (Ground Truth)
                 a_idx = 6 if t_id=="130" else 3 if t_id=="128" else 2 if t_id=="158" else 0 if t_id=="137" else 10 if t_id=="BV8" else 1
                 t_map[t_id] = col1.selectbox(f"MPR {t_id}:", [t['T_CNC'] for t in cfg['tools']], index=min(a_idx, 11), key=f"t_{f.name}_{t_id}")
                 l_offsets[t_id] = col2.number_input("Z+/-", value=0.0, step=0.1, key=f"z_{f.name}_{t_id}")
             
-            # ניתוח פסיעות היררכי
-            _, _, mill_list, thick, _ = convert_logic_v419(mpr_c, rot, nest, gz_off, t_map, l_offsets, {})
+            # ניתוח פסיעות ראשוני (ללא שינויים)
+            _, _, mill_list, thick, _ = convert_logic_v42(mpr_c, rot, nest, gz_off, t_map, l_offsets, {})
             
             st.markdown("---")
             st.markdown("### 📏 ניהול פסיעות")
             custom_passes = {}
             for g in mill_list:
                 t_info = next((t for t in cfg['tools'] if t['T_CNC'] == g['t_cnc']), {"תיאור": ""})
-                g_key = f"{g['t_cnc']}_{g['tno']}_{g['disp_num']}"
+                g_key = f"{g['t_cnc']}_{g['tno']}_{g['geo_id']}"
                 
-                st.markdown(f"**כלי {g['t_cnc']} - {t_info['תיאור']}** (פעולה {g['disp_num']})")
+                st.markdown(f"**כלי {g['t_cnc']} - {t_info['תיאור']}**")
                 
-                # תצוגת פסיעות קיימות (מסודרות מלמעלה למטה)
                 orig_passes = sorted(g['passes'], reverse=True)
                 updated_passes = []
                 for i, p_val in enumerate(orig_passes):
-                    label = f"פסיעה {'ראשונה' if i==0 else 'שנייה' if i==1 else f'מספר {i+1}'}:"
+                    label = f"פסיעה {'ראשונה' if i==0 else 'שנייה' if i==1 else f'פסיעה {i+1}'}:"
                     updated_passes.append(st.number_input(label, 0.0, 30.0, p_val, 0.1, key=f"p_{f.name}_{g_key}_{i}"))
                 
-                # הוספת פסיעה ידנית
                 if st.checkbox("הוסף פסיעה", key=f"add_{f.name}_{g_key}"):
-                    new_p = st.number_input("עומק פסיעה חדשה (Z):", 0.0, 30.0, updated_passes[-1] if updated_passes else 0.0, 0.1, key=f"new_{f.name}_{g_key}")
-                    updated_passes.append(new_p)
+                    last_z = updated_passes[-1] if updated_passes else 0.0
+                    updated_passes.append(st.number_input("עומק פסיעה חדשה (Z):", 0.0, 30.0, last_z, 0.1, key=f"new_{f.name}_{g_key}"))
                 
                 custom_passes[g_key] = updated_passes
 
-        nc, drls, final_mills, thick, tm = convert_logic_v419(mpr_c, rot, nest, gz_off, t_map, l_offsets, custom_passes)
+        # יצירת NC סופי עם כל השינויים
+        nc, drls, final_mills, thick, tm = convert_logic_v42(mpr_c, rot, nest, gz_off, t_map, l_offsets, custom_passes)
         st.subheader(f"📋 Timeline & Simulation: {f.name}")
         tcols = st.columns(min(len(tm), 10))
         for idx, step in enumerate(tm[:10]):
             tcols[idx].info(f"#{step['op']}\n{step['tool']}")
         
-        plot_v419(drls, final_mills, thick, cfg, t_map)
+        plot_v42(drls, final_mills, thick, cfg, t_map)
         st.download_button(f"📥 הורד קוד NC", nc, f.name.replace(".mpr", ".nc"))
