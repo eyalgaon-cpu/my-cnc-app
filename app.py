@@ -4,16 +4,16 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 
-# Darwish PRO 42.10 - Hierarchical Control & KeyError Immunity
-st.set_page_config(page_title="Darwish PRO 42.10", layout="wide")
+# Darwish PRO 42.20 - Safety Bounds & Hierarchical UI
+st.set_page_config(page_title="Darwish PRO 42.20", layout="wide")
 
-# פרופיל אבי - Ground Truth
+# אתחול פרופיל אבי (Ground Truth - Tool Mapping Final V2)
 if 'profiles' not in st.session_state:
     st.session_state.profiles = {
         "אבי": {
             "tools": [
                 {"T_CNC": "T1", "קוטר": 40.0, "תיאור": "כרסום 40 מילימטר", "צבע": "brown"},
-                {"T_CNC": "T2", "קוטר": 6.0, "תיאור": "כרסום 6 מילימטר (קונטור)", "צבע": "red"},
+                {"T_CNC": "T2", "קוטר": 6.0, "תיאור": "כרסום 6 מילימטר (קונטור חיצוני)", "צבע": "red"},
                 {"T_CNC": "T3", "קוטר": 8.0, "תיאור": "כרסום 8 מילימטר", "צבע": "green"},
                 {"T_CNC": "T4", "קוטר": 12.0, "תיאור": "כרסום 12 מילימטר", "צבע": "purple"},
                 {"T_CNC": "T8", "קוטר": 19.0, "תיאור": "כרסום 20 מילימטר", "צבע": "darkblue"},
@@ -29,7 +29,7 @@ if 'profiles' not in st.session_state:
         }
     }
 
-# פונקציות ליבה
+# פונקציות ליבה (שימור מגרסה 41.3)
 def get_dist(p1, p2): return math.sqrt((p1['x'] - p2['x'])**2 + (p1['y'] - p2['y'])**2)
 
 def optimize_path(points):
@@ -44,12 +44,12 @@ def get_safe_float(key, block, default=0.0):
     match = re.search(f'{key}="([^"]*)"', block)
     return float(match.group(1)) if match else default
 
-def convert_logic_v42_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map, local_offsets, custom_passes):
+def convert_logic_v42_2(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map, local_offsets, custom_passes):
     thickness = get_safe_float('t', mpr_text, 16.0)
     raw_drills = []
     geos = {}
     
-    # חילוץ גיאומטריות - כולל הגנה על חילוץ ריק
+    # חילוץ גיאומטריות
     parts = re.split(r'\](\d+)', mpr_text)
     for i in range(1, len(parts), 2):
         pts = []
@@ -58,7 +58,7 @@ def convert_logic_v42_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
             if x_m and y_m: pts.append([float(x_m.group(1)), float(y_m.group(1))])
         if pts: geos[parts[i]] = pts
 
-    # קדחים (שימור אלגוריתם השכן הקרוב)
+    # קדחים (אלגוריתם השכן הקרוב)
     for m in re.finditer(r'<102(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         b = m.group(1); xa, ya, ti = [get_safe_float(k, b) for k in ['XA', 'YA', 'TI']]
         t_mpr = (re.search(r'DU="([^"]*)"', b).group(1) if re.search(r'DU="([^"]*)"', b) else "5")
@@ -68,7 +68,7 @@ def convert_logic_v42_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
         if t_mpr in ["BV5", "5"]: t_cnc = "T45" if f_z <= 0.2 else "T44"
         raw_drills.append({'x': xa, 'y': ya, 'z': f_z, 't': t_cnc})
 
-    # כרסומים - קיבוץ היררכי
+    # כרסומים - קיבוץ חכם לפי גיאומטריה
     milling_groups = {} 
     for m in re.finditer(r'<(105|130)(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         bc = m.group(2); tno = re.search(r'TNO="([^"]*)"', bc).group(1) if re.search(r'TNO="([^"]*)"', bc) else "142"
@@ -76,15 +76,16 @@ def convert_logic_v42_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
         za = get_safe_float('ZA', bc) + global_z_off + l_off
         ea = re.search(r'EA="(\d+):', bc); geo_id = ea.group(1) if ea else None
         
-        # KeyError Immunity: שימוש בגיאומטריה קיימת או דילוג
         if geo_id and geo_id in geos:
             t_cnc = tool_map.get(tno, "T2")
             key = (geo_id, t_cnc)
             if key not in milling_groups:
-                milling_groups[key] = {'tno': tno, 't_cnc': t_cnc, 'passes': [], 'pts': [p[:] for p in geos[geo_id]], 'geo_id': geo_id}
+                milling_groups[key] = {
+                    'tno': tno, 't_cnc': t_cnc, 'passes': [], 
+                    'pts': [p[:] for p in geos[geo_id]], 'geo_id': geo_id
+                }
             milling_groups[key]['passes'].append(round(za, 3))
 
-    # טרנספורמציות
     if rotate_90:
         for d in raw_drills: d['x'], d['y'] = -d['y'], d['x']
         for g in milling_groups.values():
@@ -99,9 +100,9 @@ def convert_logic_v42_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
     for g in milling_groups.values():
         for p in g['pts']: p[0] -= mx; p[1] -= my
 
-    nc = ["%", "(NC DARWISH 42.10)", "G90 G54 G21"]; timeline = []; out_idx = 1
+    nc = ["%", "(NC DARWISH 42.20)", "G90 G54 G21"]; timeline = []; out_idx = 1
     
-    # NC - קדחים (אופטימיזציית שכן קרוב)
+    # NC - קדחים
     dr_tools = {}
     for d in raw_drills: dr_tools.setdefault(d['t'], []).append(d)
     for t_id in sorted(dr_tools.keys()):
@@ -112,7 +113,7 @@ def convert_logic_v42_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
             nc.extend([f"G0 X{d['x']:.3f} Y{d['y']:.3f}", f"G1 Z{d['z']:.3f} F1000", f"G0 Z{thickness+20}"])
         out_idx += 1
 
-    # NC - כרסומים (מיון: T2 אחרון)
+    # NC - כרסומים (T2 תמיד אחרון)
     mill_by_tool = {}
     for data in milling_groups.values():
         mill_by_tool.setdefault(data['t_cnc'], []).append(data)
@@ -125,7 +126,6 @@ def convert_logic_v42_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
         for group in mill_by_tool[t_id]:
             group['disp_num'] = out_idx
             g_key = f"{group['t_cnc']}_{group['tno']}_{group['geo_id']}"
-            # פסיעות מהרדודה לעמוקה
             active_passes = sorted(custom_passes.get(g_key, group['passes']), reverse=True)
             group['active_passes'] = active_passes
             
@@ -141,9 +141,8 @@ def convert_logic_v42_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
     nc.append("M30\n%")
     return "\n".join(nc), raw_drills, list(milling_groups.values()), thickness, timeline
 
-def plot_v42_1(drills, milling_list, thickness, cfg, tool_map):
+def plot_v42_2(drills, milling_list, thickness, cfg, tool_map):
     fig = go.Figure()
-    # שולחן המכונה
     fig.add_shape(type="rect", x0=0, y0=0, x1=3050, y1=1300, line=dict(color="black", width=2), layer="below")
     
     for g in milling_list:
@@ -151,9 +150,8 @@ def plot_v42_1(drills, milling_list, thickness, cfg, tool_map):
         xp, yp = zip(*g['pts'])
         p_list = sorted(g.get('active_passes', g['passes']), reverse=True)
         
-        # Hover - עברית מלאה ומרחק מהחלק העליון
         if len(p_list) > 1:
-            h_text = "".join([f"<br>פסיעה {'ראשונה' if i==0 else 'שנייה' if i==1 else f'מספר {i+1}'} - {round(thickness - p, 2)} מילימטר (מהחלק העליון)" for i, p in enumerate(p_list)])
+            h_text = "".join([f"<br>פסיעה {'ראשונה' if i==0 else 'שנייה' if i==1 else f'פסיעה {i+1}'} - {round(thickness - p, 2)} מילימטר (מהחלק העליון)" for i, p in enumerate(p_list)])
         else:
             h_text = f"<br>עומק כרסום: {round(thickness - p_list[0], 2)} מילימטר (מהחלק העליון)"
 
@@ -172,7 +170,7 @@ def plot_v42_1(drills, milling_list, thickness, cfg, tool_map):
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
 # --- UI ---
-st.sidebar.title("🛠️ Darwish PRO 42.10")
+st.sidebar.title("🛠️ Darwish PRO 42.20")
 cfg = st.session_state.profiles["אבי"]
 gz_off = st.sidebar.slider("כיול Z גלובלי (מילימטר)", -3.0, 3.0, 0.0, 0.1)
 
@@ -192,7 +190,7 @@ if uploaded:
                 l_offsets[tid] = col2.number_input("Z+/-", value=0.0, step=0.1, key=f"z_{f.name}_{tid}")
             
             # ניתוח פסיעות היררכי
-            _, _, mill_list, thick, _ = convert_logic_v42_1(m_text, False, False, gz_off, t_map, l_offsets, {})
+            _, _, mill_list, thick, _ = convert_logic_v42_2(m_text, False, False, gz_off, t_map, l_offsets, {})
             
             st.markdown("---")
             st.markdown("### 📏 ניהול פסיעות")
@@ -206,20 +204,20 @@ if uploaded:
                 u_passes = []
                 for i, p_val in enumerate(o_passes):
                     label = f"פסיעה {'ראשונה' if i==0 else 'שנייה' if i==1 else f'פסיעה {i+1}'}:"
-                    u_passes.append(st.number_input(label, 0.0, 30.0, p_val, 0.1, key=f"p_{f.name}_{g_key}_{i}"))
+                    # תיקון ה-Z המינימלי למניעת קריסת Streamlit
+                    u_passes.append(st.number_input(label, -5.0, 30.0, p_val, 0.1, key=f"p_{f.name}_{g_key}_{i}"))
                 
-                # כפתור הוספת פסיעה
                 if st.checkbox("הוסף פסיעה", key=f"add_{f.name}_{g_key}"):
                     last_z = u_passes[-1] if u_passes else 0.0
-                    u_passes.append(st.number_input("עומק פסיעה חדשה (Z):", 0.0, 30.0, last_z, 0.1, key=f"new_{f.name}_{g_key}"))
+                    u_passes.append(st.number_input("עומק פסיעה חדשה (Z):", -5.0, 30.0, last_z, 0.1, key=f"new_{f.name}_{g_key}"))
                 
                 c_passes[g_key] = u_passes
 
         # יצירת NC והדמיה
-        nc, drls, mills, thick, tm = convert_logic_v42_1(m_text, False, False, gz_off, t_map, l_offsets, c_passes)
+        nc, drls, mills, thick, tm = convert_logic_v42_2(m_text, False, False, gz_off, t_map, l_offsets, c_passes)
         st.subheader(f"📋 Timeline: {f.name}")
         t_cols = st.columns(min(len(tm), 10))
         for i, step in enumerate(tm[:10]): t_cols[i].info(f"#{step['op']}\n{step['tool']}")
         
-        plot_v42_1(drls, mills, thick, cfg, t_map)
+        plot_v42_2(drls, mills, thick, cfg, t_map)
         st.download_button(f"📥 הורד NC", nc, f.name.replace(".mpr", ".nc"))
