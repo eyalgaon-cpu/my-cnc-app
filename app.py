@@ -2,8 +2,8 @@ import streamlit as st
 import re, os, math
 import plotly.graph_objects as go
 
-# Darwish PRO 43.10 - RK Compensation & Tool Radius Correction
-st.set_page_config(page_title="Darwish PRO 43.10", layout="wide")
+# Darwish PRO 43.20 - Workspace Proportions & Null Fix
+st.set_page_config(page_title="Darwish PRO 43.20", layout="wide")
 
 if 'profiles' not in st.session_state:
     st.session_state.profiles = {"אבי": {"tools": [
@@ -19,7 +19,7 @@ if 'profiles' not in st.session_state:
         {"T_CNC": "T47", "קוטר": 8.0, "תיאור": "מקדח 8 מילימטר", "צבע": "darkgreen"},
         {"T_CNC": "T44", "קוטר": 5.0, "תיאור": "מקדח 5 מילימטר רגיל", "צבע": "gray"},
         {"T_CNC": "T45", "קוטר": 5.0, "תיאור": "מקדח 5 מילימטר עובר", "צבע": "white"}
-    ], "bed_x": 3050, "bed_y": 1300}}
+    ], "bed_x": 1300, "bed_y": 3050}}
 
 def get_dist(p1, p2): return math.sqrt((p1['x'] - p2['x'])**2 + (p1['y'] - p2['y'])**2)
 def optimize_path(points):
@@ -33,8 +33,9 @@ def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1)) if m else default
 
-def convert_logic_v43_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map, local_offsets, custom_passes_dict):
+def convert_logic_v43_2(mpr_text, rotate_90, zero_nesting, global_z_off, tool_map, local_offsets, custom_passes_dict):
     thick = get_f('t', mpr_text, 16.0); raw_drills = []; geos = {}
+    p_l = get_f('l', mpr_text, 0.0); p_w = get_f('w', mpr_text, 0.0)
     parts = re.split(r'\](\d+)', mpr_text)
     for i in range(1, len(parts), 2):
         pts = []
@@ -62,6 +63,7 @@ def convert_logic_v43_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
             milling_data.append({'t_cnc': tool_map.get(tno, "T2"), 'za': round(za, 3), 'pts': [p[:] for p in geos[geo_id]], 'rk': rk})
 
     if rotate_90:
+        p_l, p_w = p_w, p_l
         for d in raw_drills: d['x'], d['y'] = -d['y'], d['x']
         for g in milling_data:
             for p in g['pts']: p[0], p[1] = -p[1], p[0]
@@ -73,7 +75,7 @@ def convert_logic_v43_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
     for g in milling_data:
         for p in g['pts']: p[0] -= mx; p[1] -= my
 
-    nc = ["%", "(NC DARWISH 43.10)", "G90 G54 G21"]; timeline = []; out_idx = 1
+    nc = ["%", "(NC DARWISH 43.20)", "G90 G54 G21"]; timeline = []; out_idx = 1
     used = sorted(list(set([d['t'] for d in raw_drills] + [m['t_cnc'] for m in milling_data])))
     order = [t for t in used if t != "T2"] + (["T2"] if "T2" in used else [])
 
@@ -95,20 +97,26 @@ def convert_logic_v43_1(mpr_text, rotate_90, zero_nesting, global_z_off, tool_ma
                     nc.extend(["G40", "G0 Z36.0"])
         out_idx += 1
     nc.append("M30\n%")
-    return "\n".join(nc), raw_drills, milling_data, thick, timeline
+    return "\n".join(nc), raw_drills, milling_data, thick, timeline, (p_l, p_w)
 
-def plot_v43_1(drills, milling_list, thick, cfg):
+def plot_v43_2(drills, milling_list, thick, cfg, part_dims):
     fig = go.Figure()
-    fig.add_shape(type="rect", x0=0, y0=0, x1=3050, y1=1300, line=dict(color="black", width=2), layer="below")
+    # משטח עבודה של המכונה
+    fig.add_shape(type="rect", x0=0, y0=0, x1=cfg['bed_x'], y1=cfg['bed_y'], line=dict(color="gray", width=1, dash="dot"), layer="below")
+    # הפלטה מהקובץ
+    fig.add_shape(type="rect", x0=0, y0=0, x1=part_dims[0], y1=part_dims[1], line=dict(color="black", width=2), layer="below", fillcolor="rgba(200,200,200,0.1)")
+    
     for g in milling_list:
         xp, yp = zip(*g['pts']); ps = sorted(g.get('active_passes', [g['za']]), reverse=True)
         h = "".join([f"<br>פסיעה {i+1} - {round(thick-p,2)} מילימטר" for i,p in enumerate(ps)])
         fig.add_trace(go.Scatter(x=xp, y=yp, mode='lines', line=dict(width=2), hovertemplate=f"כלי: {g['t_cnc']}<br>פיצוי: {g['rk']}{h}<extra></extra>"))
     for d in drills: fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers', hovertemplate=f"קידוח {d['t']}<extra></extra>"))
-    fig.update_layout(width=1000, height=500, xaxis=dict(range=[-50, 3100]), yaxis=dict(range=[-50, 1350]), dragmode='pan')
+    
+    fig.update_layout(width=700, height=900, dragmode='pan', xaxis=dict(title="X מילימטר"), yaxis=dict(title="Y מילימטר"))
+    fig.update_yaxes(scaleanchor="x", scaleratio=1)
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
-st.sidebar.title("🛠️ Darwish PRO 43.10")
+st.sidebar.title("🛠️ Darwish PRO 43.20")
 cfg = st.session_state.profiles["אבי"]
 nest, rot = st.sidebar.checkbox("Nesting"), st.sidebar.checkbox("סובב 90 מעלות")
 gz_off = st.sidebar.slider("כיול Z (מילימטר)", -3.0, 3.0, 0.0, 0.1)
@@ -128,10 +136,13 @@ if uploaded:
                 except: idx = 1
                 t_map[tid] = col1.selectbox(f"MPR {tid}:", [t['T_CNC'] for t in cfg['tools']], index=min(idx, 11), key=f"t_{f.name}_{tid}")
                 l_offs[tid] = col2.number_input("Z+/-", value=0.0, step=0.1, key=f"z_{f.name}_{tid}")
-            _, _, m_list, _, _ = convert_logic_v43_1(txt, rot, nest, gz_off, t_map, l_offs, {})
+            
+            # null fix: Capture list side effect
+            _, _, m_list, _, _, _ = convert_logic_v43_2(txt, rot, nest, gz_off, t_map, l_offs, {})
             st.markdown("---")
             st.markdown("### 📏 פסיעות")
-            by_tool = {}; [by_tool.setdefault(m['t_cnc'], set()).add(m['za']) for m in m_list]
+            by_tool = {}
+            for m in m_list: by_tool.setdefault(m['t_cnc'], set()).add(m['za'])
             c_p_dict = {}
             s_order = [t for t in sorted(by_tool.keys()) if t != "T2"] + (["T2"] if "T2" in by_tool else [])
             for t_id in s_order:
@@ -140,9 +151,10 @@ if uploaded:
                 for i, p in enumerate(p_ds): u_ps.append(st.number_input(f"פסיעה {i+1}:", -5.0, 30.0, p, 0.1, key=f"p_{f.name}_{t_id}_{i}"))
                 if st.checkbox(f"הוסף פסיעה", key=f"add_{f.name}_{t_id}"): u_ps.append(st.number_input("עומק נוסף:", -5.0, 30.0, u_ps[-1], 0.1, key=f"new_{f.name}_{t_id}"))
                 c_p_dict[t_id] = u_ps
-        nc, drls, mills, thick, tm = convert_logic_v43_1(txt, rot, nest, gz_off, t_map, l_offs, c_p_dict)
+        
+        nc, drls, mills, thick, tm, p_dims = convert_logic_v43_2(txt, rot, nest, gz_off, t_map, l_offs, c_p_dict)
         st.subheader(f"📋 Timeline: {f.name}")
         t_cols = st.columns(min(len(tm), 10))
         for i, s in enumerate(tm[:10]): t_cols[i].info(f"#{s['op']}\n{s['tool']}\n({s['type']})")
-        plot_v43_1(drls, mills, thick, cfg)
+        plot_v43_2(drls, mills, thick, cfg, p_dims)
         st.download_button(f"📥 הורד NC", nc, f.name.replace(".mpr", ".nc"))
