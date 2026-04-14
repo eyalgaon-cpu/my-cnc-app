@@ -2,8 +2,8 @@ import streamlit as st
 import re, math
 import plotly.graph_objects as go
 
-# Darwish PRO 43.80 - Path Unification & Carpentry Z-Display
-st.set_page_config(page_title="Darwish PRO 43.80", layout="wide")
+# Darwish PRO 43.90 - Unpacking Fix & Anchor Logic
+st.set_page_config(page_title="Darwish PRO 43.90", layout="wide")
 
 if 'profiles' not in st.session_state:
     st.session_state.profiles = {"אבי": {"tools": [
@@ -33,7 +33,7 @@ def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1)) if m else default
 
-def convert_logic_v43_8(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, tool_map, local_offsets, custom_passes_dict):
+def convert_logic_v43_9(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, tool_map, local_offsets, custom_passes_dict):
     thick = get_f('t', mpr_text, 19.0); p_l = get_f('l', mpr_text, 0.0); p_w = get_f('w', mpr_text, 0.0)
     raw_drills, milling_data, geos = [], [], {}
     
@@ -91,7 +91,7 @@ def convert_logic_v43_8(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, t
         for g in milling_data:
             for p in g['pts']: p[0] += anchor_x; p[1] += anchor_y
 
-    nc, timeline, out_idx = ["%", "(NC DARWISH 43.80)", "G90 G54 G21"], [], 1
+    nc, timeline, out_idx = ["%", "(NC DARWISH 43.90)", "G90 G54 G21"], [], 1
     used_tools = sorted(list(set([d['t'] for d in raw_drills] + [m['t_cnc'] for m in milling_data])))
     
     for t_id in [t for t in used_tools if t != "T2"]:
@@ -104,7 +104,6 @@ def convert_logic_v43_8(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, t
         if ms:
             timeline.append({"op": out_idx, "tool": t_id, "type": ms[0]['mtype']})
             for m in ms:
-                # מפתח איחוד: שילוב של כלי ומסלול גיאומטרי
                 path_key = f"{t_id}_{tuple(tuple(p) for p in m['pts'])}"
                 ps = custom_passes_dict.get(path_key, [m['za']])
                 rk_c = "G41 " if m['rk'] == "WRKL" else "G42 " if m['rk'] == "WRKR" else ""
@@ -132,16 +131,14 @@ def convert_logic_v43_8(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, t
     nc.append("M30\n%")
     return "\n".join(nc), raw_drills, milling_data, thick, timeline, (p_l, p_w), (ox, oy)
 
-def plot_v43_8(drills, milling_list, thick, cfg, part_dims):
+def plot_v43_9(drills, milling_list, thick, cfg, part_dims):
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, y0=0, x1=cfg['bed_x'], y1=cfg['bed_y'], line=dict(color="gray", width=1, dash="dot"), layer="below")
     fig.add_shape(type="rect", x0=0, y0=0, x1=part_dims[0], y1=part_dims[1], line=dict(color="black", width=2), layer="below")
     for g in milling_list:
         xp, yp = zip(*g['pts'])
-        # תצוגה נגרית ב-Hover
         if g['za'] > 0.5: z_info = f"עומק חדירה: {round(thick - g['za'], 2)} מילימטר"
         else: z_info = f"חדירה לשולחן: {abs(round(g['za'], 2))} מילימטר"
-        
         fig.add_trace(go.Scatter(x=xp, y=yp, mode='lines', line=dict(width=2), name=f"{g['t_cnc']} | {g['mtype']}", 
                                  hovertemplate=f"<b>{g['t_cnc']} ({g['mtype']})</b><br>{z_info}<extra></extra>"))
     for d in drills: fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers', name=f"קידוח {d['t']}", hovertemplate=f"קידוח {d['t']}<extra></extra>"))
@@ -149,7 +146,7 @@ def plot_v43_8(drills, milling_list, thick, cfg, part_dims):
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
-st.sidebar.title("🛠️ Darwish PRO 43.80")
+st.sidebar.title("🛠️ Darwish PRO 43.90")
 cfg = st.session_state.profiles["אבי"]
 rot, gz_off = st.sidebar.checkbox("סובב 90 מעלות"), st.sidebar.slider("כיול Z (מילימטר)", -3.0, 3.0, 0.0, 0.1)
 
@@ -157,8 +154,11 @@ uploaded = st.file_uploader("טען MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
         txt = f.getvalue().decode('utf-8', errors='ignore')
-        temp = convert_logic_v43_8(txt, rot, 0, 0, 0, {}, {}, {})
-        ox, oy, thick_mpr = temp[6], temp[3]
+        temp = convert_logic_v43_9(txt, rot, 0, 0, 0, {}, {}, {})
+        # פתרון ValueError: פריקה מפורשת של הטאפל
+        ox, oy = temp[6]
+        thick_mpr = temp[3]
+        
         with st.sidebar.expander(f"⚙️ {f.name}", expanded=True):
             ax, ay = st.slider("עוגן X", 0.0, 500.0, ox, 0.5, key=f"x_{f.name}"), st.slider("עוגן Y", 0.0, 500.0, oy, 0.5, key=f"y_{f.name}")
             t_ids = sorted(list(set(re.findall(r'(?:TNO|T_|DU)="([^"]*)"', txt))))
@@ -172,12 +172,12 @@ if uploaded:
                 t_map[tid] = col1.selectbox(f"MPR {tid}:", [t['T_CNC'] for t in cfg['tools']], index=min(idx, 11), key=f"t_{f.name}_{tid}")
                 l_offs[tid] = col2.number_input("Z+/-", value=0.0, step=0.1, key=f"z_{f.name}_{tid}")
             
-            _ = convert_logic_v43_8(txt, rot, ax, ay, gz_off, t_map, l_offs, {})
+            # ביצוע המרה לשליפת נתונים מעודכנים
+            res = convert_logic_v43_9(txt, rot, ax, ay, gz_off, t_map, l_offs, {})
             st.markdown("---")
             st.markdown("### 📏 ניהול פסיעות משולב")
-            # איחוד לפי מסלול בסידבר
             groups = {}
-            for m in _[2]:
+            for m in res[2]:
                 key = (m['t_cnc'], tuple(tuple(p) for p in m['pts']))
                 groups.setdefault(key, []).append(m)
             
@@ -196,9 +196,9 @@ if uploaded:
                 cp_dict[f"{t_id}_{path}"] = u_ps
                 st.markdown("---")
         
-        nc, drls, mills, thick, tm, p_dims, _ = convert_logic_v43_8(txt, rot, ax, ay, gz_off, t_map, l_offs, cp_dict)
+        nc, drls, mills, thick, tm, p_dims, _ = convert_logic_v43_9(txt, rot, ax, ay, gz_off, t_map, l_offs, cp_dict)
         st.subheader(f"📋 Timeline: {f.name}")
         t_cols = st.columns(min(len(tm), 10))
         for i, s in enumerate(tm[:10]): t_cols[i].info(f"#{s['op']}\n{s['tool']}\n({s['type']})")
-        plot_v43_8(drls, mills, thick, cfg, p_dims)
+        plot_v43_9(drls, mills, thick, cfg, p_dims)
         st.download_button(f"📥 הורד NC", nc, f.name.replace(".mpr", ".nc"))
