@@ -2,8 +2,8 @@ import streamlit as st
 import re, math
 import plotly.graph_objects as go
 
-# Darwish PRO 43.30 - Dynamic Anchor & Pocket Support (<181)
-st.set_page_config(page_title="Darwish PRO 43.30", layout="wide")
+# Darwish PRO 43.40 - Pocket Identification & Timeline Separation
+st.set_page_config(page_title="Darwish PRO 43.40", layout="wide")
 
 if 'profiles' not in st.session_state:
     st.session_state.profiles = {"אבי": {"tools": [
@@ -33,7 +33,7 @@ def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1)) if m else default
 
-def convert_logic_v43_3(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, tool_map, local_offsets, custom_passes_dict):
+def convert_logic_v43_4(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, tool_map, local_offsets, custom_passes_dict):
     thick = get_f('t', mpr_text, 16.0); p_l = get_f('l', mpr_text, 0.0); p_w = get_f('w', mpr_text, 0.0)
     raw_drills = []; milling_data = []; geos = {}
     
@@ -45,7 +45,6 @@ def convert_logic_v43_3(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, t
             if x_m and y_m: pts.append([float(x_m.group(1)), float(y_m.group(1))])
         if pts: geos[parts[i]] = pts
 
-    # קידוחים
     for m in re.finditer(r'<102(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         b = m.group(1); xa, ya, ti = [get_f(k, b) for k in ['XA', 'YA', 'TI']]
         an, ab, wi = int(get_f('AN', b, 1.0)), get_f('AB', b, 0.0), math.radians(get_f('WI', b, 0.0))
@@ -55,23 +54,20 @@ def convert_logic_v43_3(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, t
         if t_mpr.replace("BV","") in ["5", "5.0", "5.0000"]: t_cnc = "T45" if fz <= 0.2 else "T44"
         for i in range(an): raw_drills.append({'x': xa+(i*ab*math.cos(wi)), 'y': ya+(i*ab*math.sin(wi)), 'z': fz, 't': t_cnc})
 
-    # כרסומים וכיסים (<105, <130, <181)
     for m in re.finditer(r'<(105|130|181)(.*?)(?=<|\!|\[H)', mpr_text, re.DOTALL):
         bc = m.group(2); tag = m.group(1)
-        tno = re.search(r'TNO="([^"]*)"', bc).group(1) if re.search(r'TNO="([^"]*)"', bc) else "142"
+        t_id_match = re.search(r'(?:TNO|T_)="([^"]*)"', bc)
+        t_mpr = t_id_match.group(1) if t_id_match else ("140" if tag == '181' else "142")
         rk = re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "NOWRK"
-        za = get_f('ZA', bc) + global_z_off + local_offsets.get(tno, 0.0)
+        za = get_f('ZA', bc) + global_z_off + local_offsets.get(t_mpr, 0.0)
         ea = re.search(r'EA="(\d+):', bc); geo_id = ea.group(1) if ea else None
         if geo_id and geo_id in geos:
-            milling_data.append({'t_cnc': tool_map.get(tno, "T2"), 'za': round(za, 3), 'pts': [p[:] for p in geos[geo_id]], 'rk': rk, 'type': 'Pocket' if tag=='181' else 'Mill'})
+            milling_data.append({'t_mpr': t_mpr, 't_cnc': tool_map.get(t_mpr, "T2"), 'za': round(za, 3), 'pts': [p[:] for p in geos[geo_id]], 'rk': rk, 'type': 'Pocket' if tag=='181' else 'Mill'})
 
-    # זיהוי עוגן מקורי
     all_x = [d['x'] for d in raw_drills] + [p[0] for m in milling_data for p in m['pts']]
     all_y = [d['y'] for d in raw_drills] + [p[1] for m in milling_data for p in m['pts']]
-    orig_min_x = min(all_x) if all_x else 0.0
-    orig_min_y = min(all_y) if all_y else 0.0
+    orig_min_x, orig_min_y = (min(all_x) if all_x else 0.0, min(all_y) if all_y else 0.0)
 
-    # טרנספורמציה (סיבוב ויישור עוגן)
     for d in raw_drills: d['x'] -= orig_min_x; d['y'] -= orig_min_y
     for g in milling_data:
         for p in g['pts']: p[0] -= orig_min_x; p[1] -= orig_min_y
@@ -81,25 +77,24 @@ def convert_logic_v43_3(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, t
         for d in raw_drills: d['x'], d['y'] = -d['y'], d['x']
         for g in milling_data:
             for p in g['pts']: p[0], p[1] = -p[1], p[0]
-        # החזרה למגרש לאחר סיבוב
-        all_x = [d['x'] for d in raw_drills] + [p[0] for m in milling_data for p in m['pts']]
-        all_y = [d['y'] for d in raw_drills] + [p[1] for m in milling_data for p in m['pts']]
-        curr_min_x, curr_min_y = min(all_x), min(all_y)
-        for d in raw_drills: d['x'] += (anchor_x - curr_min_x); d['y'] += (anchor_y - curr_min_y)
+        cur_x = [d['x'] for d in raw_drills] + [p[0] for m in milling_data for p in m['pts']]
+        cur_y = [d['y'] for d in raw_drills] + [p[1] for m in milling_data for p in m['pts']]
+        cx, cy = min(cur_x) if cur_x else 0, min(cur_y) if cur_y else 0
+        for d in raw_drills: d['x'] += (anchor_x - cx); d['y'] += (anchor_y - cy)
         for g in milling_data:
-            for p in g['pts']: p[0] += (anchor_x - curr_min_x); p[1] += (anchor_y - curr_min_y)
+            for p in g['pts']: p[0] += (anchor_x - cx); p[1] += (anchor_y - cy)
     else:
         for d in raw_drills: d['x'] += anchor_x; d['y'] += anchor_y
         for g in milling_data:
             for p in g['pts']: p[0] += anchor_x; p[1] += anchor_y
 
-    nc = ["%", "(NC DARWISH 43.30)", "G90 G54 G21"]; timeline = []; out_idx = 1
+    nc = ["%", "(NC DARWISH 43.40)", "G90 G54 G21"]; timeline = []; out_idx = 1
     used = sorted(list(set([d['t'] for d in raw_drills] + [m['t_cnc'] for m in milling_data])))
-    order = [t for t in used if t != "T2"] + (["T2"] if "T2" in used else [])
-
+    
+    # מיון: T2 אחרון, עם הפרדה פנימית
+    order = [t for t in used if t != "T2"]
     for t_id in order:
-        nc.append(f"M6 {t_id}")
-        ds = [d for d in raw_drills if d['t'] == t_id]
+        nc.append(f"M6 {t_id}"); ds = [d for d in raw_drills if d['t'] == t_id]
         if ds:
             timeline.append({"op": out_idx, "tool": t_id, "type": "קידוח"})
             for d in optimize_path(ds): nc.extend([f"G0 X{d['x']:.3f} Y{d['y']:.3f}", f"G1 Z{d['z']:.3f} F1000", "G0 Z36.0"])
@@ -107,17 +102,44 @@ def convert_logic_v43_3(mpr_text, rotate_90, anchor_x, anchor_y, global_z_off, t
         if ms:
             timeline.append({"op": out_idx, "tool": t_id, "type": ms[0]['type']})
             for m in ms:
-                m['active_passes'] = custom_passes_dict.get(t_id, [m['za']])
+                ps = custom_passes_dict.get(t_id, [m['za']])
                 rk_cmd = "G41 " if m['rk'] == "WRKL" else "G42 " if m['rk'] == "WRKR" else ""
-                for z in m['active_passes']:
+                for z in ps:
                     nc.extend([f"(PASS Z={z})", f"{rk_cmd}G0 X{m['pts'][0][0]:.3f} Y{m['pts'][0][1]:.3f}", f"G1 Z{z:.3f} F2000"])
                     for p in m['pts'][1:]: nc.append(f"G1 X{p[0]:.3f} Y{p[1]:.3f} F3000")
                     nc.extend(["G40", "G0 Z36.0"])
         out_idx += 1
+
+    if "T2" in used:
+        nc.append("M6 T2")
+        # פאזה 1: שקעים ומסגרות (ZA > 0)
+        t2_in = [m for m in milling_data if m['t_cnc'] == "T2" and m['za'] > 0]
+        if t2_in:
+            timeline.append({"op": out_idx, "tool": "T2", "type": "שקע / מסגרת"}); out_idx += 1
+            for m in t2_in:
+                ps = custom_passes_dict.get("T2", [m['za']])
+                rk_cmd = "G41 " if m['rk'] == "WRKL" else "G42 " if m['rk'] == "WRKR" else ""
+                for z in ps:
+                    nc.extend([f"(PASS Z={z})", f"{rk_cmd}G0 X{m['pts'][0][0]:.3f} Y{m['pts'][0][1]:.3f}", f"G1 Z{z:.3f} F2000"])
+                    for p in m['pts'][1:]: nc.append(f"G1 X{p[0]:.3f} Y{p[1]:.3f} F3000")
+                    nc.extend(["G40", "G0 Z36.0"])
+        # פאזה 2: קונטור סופי (ZA <= 0)
+        t2_out = [m for m in milling_data if m['t_cnc'] == "T2" and m['za'] <= 0]
+        if t2_out:
+            timeline.append({"op": out_idx, "tool": "T2", "type": "קונטור סופי"})
+            for m in t2_out:
+                ps = custom_passes_dict.get("T2", [m['za']])
+                rk_cmd = "G41 " if m['rk'] == "WRKL" else "G42 " if m['rk'] == "WRKR" else ""
+                for z in ps:
+                    nc.extend([f"(PASS Z={z})", f"{rk_cmd}G0 X{m['pts'][0][0]:.3f} Y{m['pts'][0][1]:.3f}", f"G1 Z{z:.3f} F2000"])
+                    for p in m['pts'][1:]: nc.append(f"G1 X{p[0]:.3f} Y{p[1]:.3f} F3000")
+                    nc.extend(["G40", "G0 Z36.0"])
+        out_idx += 1
+
     nc.append("M30\n%")
     return "\n".join(nc), raw_drills, milling_data, thick, timeline, (p_l, p_w), (orig_min_x, orig_min_y)
 
-def plot_v43_3(drills, milling_list, thick, cfg, part_dims):
+def plot_v43_4(drills, milling_list, thick, cfg, part_dims):
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, y0=0, x1=cfg['bed_x'], y1=cfg['bed_y'], line=dict(color="gray", width=1, dash="dot"), layer="below")
     fig.add_shape(type="rect", x0=0, y0=0, x1=part_dims[0], y1=part_dims[1], line=dict(color="black", width=2), layer="below")
@@ -130,7 +152,7 @@ def plot_v43_3(drills, milling_list, thick, cfg, part_dims):
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
 
-st.sidebar.title("🛠️ Darwish PRO 43.30")
+st.sidebar.title("🛠️ Darwish PRO 43.40")
 cfg = st.session_state.profiles["אבי"]
 rot = st.sidebar.checkbox("סובב 90 מעלות")
 gz_off = st.sidebar.slider("כיול Z (מילימטר)", -3.0, 3.0, 0.0, 0.1)
@@ -139,14 +161,12 @@ uploaded = st.file_uploader("טען MPR", accept_multiple_files=True)
 if uploaded:
     for f in uploaded:
         txt = f.getvalue().decode('utf-8', errors='ignore')
-        # זיהוי עוגן ראשוני להגדרת סליידרים
-        temp_convert = convert_logic_v43_3(txt, rot, 0, 0, 0, {}, {}, {})
-        orig_x, orig_y = temp_convert[6]
-        
+        temp_convert = convert_logic_v43_4(txt, rot, 0, 0, 0, {}, {}, {})
+        ox, oy = temp_convert[6]
         with st.sidebar.expander(f"⚙️ {f.name}", expanded=True):
-            off_x = st.slider("עוגן X (מילימטר)", 0.0, 500.0, orig_x, 0.5, key=f"ox_{f.name}")
-            off_y = st.slider("עוגן Y (מילימטר)", 0.0, 500.0, orig_y, 0.5, key=f"oy_{f.name}")
-            t_ids = sorted(list(set(re.findall(r'(?:DU|TNO|T_)="([^"]*)"', txt))))
+            ax = st.slider("עוגן X (מילימטר)", 0.0, 500.0, ox, 0.5, key=f"x_{f.name}")
+            ay = st.slider("עוגן Y (מילימטר)", 0.0, 500.0, oy, 0.5, key=f"y_{f.name}")
+            t_ids = sorted(list(set(re.findall(r'(?:TNO|T_|DU)="([^"]*)"', txt))))
             t_map, l_offs = {}, {}
             for tid in t_ids:
                 col1, col2 = st.columns([2, 1])
@@ -157,21 +177,21 @@ if uploaded:
                 t_map[tid] = col1.selectbox(f"MPR {tid}:", [t['T_CNC'] for t in cfg['tools']], index=min(idx, 11), key=f"t_{f.name}_{tid}")
                 l_offs[tid] = col2.number_input("Z+/-", value=0.0, step=0.1, key=f"z_{f.name}_{tid}")
             
-            _ = convert_logic_v43_3(txt, rot, off_x, off_y, gz_off, t_map, l_offs, {})
+            _ = convert_logic_v43_4(txt, rot, ax, ay, gz_off, t_map, l_offs, {})
             st.markdown("---")
             st.markdown("### 📏 פסיעות")
-            by_tool = {}; [by_tool.setdefault(m['t_cnc'], set()).add(m['za']) for m in _[2]]
-            c_p_dict = {}
-            for t_id in [t for t in sorted(by_tool.keys()) if t != "T2"] + (["T2"] if "T2" in by_tool else []):
+            by_t = {}; [by_t.setdefault(m['t_cnc'], set()).add(m['za']) for m in _[2]]
+            cp_dict = {}
+            for t_id in [t for t in sorted(by_t.keys()) if t != "T2"] + (["T2"] if "T2" in by_t else []):
                 st.markdown(f"#### כלי {t_id}")
-                p_ds = sorted(list(by_tool[t_id]), reverse=True); u_ps = []
+                p_ds = sorted(list(by_t[t_id]), reverse=True); u_ps = []
                 for i, p in enumerate(p_ds): u_ps.append(st.number_input(f"פסיעה {i+1}:", -5.0, 30.0, p, 0.1, key=f"p_{f.name}_{t_id}_{i}"))
-                if st.checkbox(f"הוסף פסיעה", key=f"add_{f.name}_{t_id}"): u_ps.append(st.number_input("עומק נוסף:", -5.0, 30.0, u_ps[-1], 0.1, key=f"new_{f.name}_{t_id}"))
-                c_p_dict[t_id] = u_ps
+                if st.checkbox(f"הוסף פסיעה", key=f"add_{f.name}_{t_id}"): u_ps.append(st.number_input("נוסף:", -5.0, 30.0, u_ps[-1], 0.1, key=f"new_{f.name}_{t_id}"))
+                cp_dict[t_id] = u_ps
         
-        nc, drls, mills, thick, tm, p_dims, _ = convert_logic_v43_3(txt, rot, off_x, off_y, gz_off, t_map, l_offs, c_p_dict)
+        nc, drls, mills, thick, tm, p_dims, _ = convert_logic_v43_4(txt, rot, ax, ay, gz_off, t_map, l_offs, cp_dict)
         st.subheader(f"📋 Timeline: {f.name}")
         t_cols = st.columns(min(len(tm), 10))
         for i, s in enumerate(tm[:10]): t_cols[i].info(f"#{s['op']}\n{s['tool']}\n({s['type']})")
-        plot_v43_3(drls, mills, thick, cfg, p_dims)
+        plot_v43_4(drls, mills, thick, cfg, p_dims)
         st.download_button(f"📥 הורד NC", nc, f.name.replace(".mpr", ".nc"))
