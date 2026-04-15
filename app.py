@@ -18,27 +18,22 @@ if 'tool_db' not in st.session_state:
         {"T_CNC": "T44", "MPR_Name": "BV5", "תיאור": "Drill 5mm", "קוטר": 5.0, "RPM": 4500, "Feed": 1200}
     ])
 
-# אפשרות להעלים את לשונית הכלים
 with st.expander("🛠️ לשונית כלים (הגדרות מאסטר)", expanded=False):
     st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="master_tools")
     st.info("כאן מעדכנים קטרים אחרי השחזה. האפליקציה תחשב את האופסט בהתאם.")
 
 # --- 2. פונקציות מתמטיות (Software Offset & Ramping) ---
 def calculate_offset_path(points, tool_radius):
-    """חישוב מסלול מחוץ/בתוך הקו (G40 Logic)"""
     if tool_radius == 0: return points
     pts = np.array(points)
     new_pts = []
     for i in range(len(pts)):
-        # וקטור כיוון של הסגמנט
         if i < len(pts) - 1:
             v = pts[i+1] - pts[i]
         else:
             v = pts[i] - pts[i-1]
-        
         dist = np.linalg.norm(v)
         if dist == 0: continue
-        # נורמל (צידוד שמאלה G41)
         n = np.array([-v[1], v[0]]) / dist
         new_pts.append((pts[i] + n * tool_radius).tolist())
     return new_pts
@@ -50,7 +45,6 @@ def get_f(key, block, default=0.0):
 
 # --- 3. ממשק ייצור מרכזי ---
 st.title("🏭 מרכז ייצור דרוויש 47.0")
-
 col_settings, col_viewer = st.columns([1, 2])
 
 with col_settings:
@@ -59,15 +53,12 @@ with col_settings:
     user_off_x = st.number_input("הרחקה ידנית X (מעבר ל-MPR)", value=0.0)
     user_off_y = st.number_input("הרחקה ידנית Y (מעבר ל-MPR)", value=0.0)
     ramp_val = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
-
     upl = st.file_uploader("טען קובץ MPR", accept_multiple_files=True)
 
 if upl:
     for f in upl:
         mpr_content = f.getvalue().decode('utf-8', errors='ignore')
         thickness = get_f('t', mpr_content, 19.0)
-        
-        # --- חילוץ גאומטריות ---
         geometries = {}
         sections = re.split(r'\](\d+)', mpr_content)
         for i in range(1, len(sections), 2):
@@ -79,19 +70,15 @@ if upl:
                     pts.append([yv, xv] if rotate_90 else [xv, yv])
             if pts: geometries[sections[i]] = pts
 
-        # --- ניתוח וקיבוץ פעולות (Internal / Final) ---
         ops = []
         for m_match in re.finditer(r'<(102|105|130|181)(.*?)(?=<|\!|\[H)', mpr_content, re.DOTALL):
             tag, bc = m_match.group(1), m_match.group(2)
             t_mpr = clean_txt(re.search(r'(?:TNO|T_|DU)="([^"]*)"', bc).group(1)) if re.search(r'(?:TNO|T_|DU)="([^"]*)"', bc) else "142"
-            
-            # מציאת הכלי ב-DB
             tool_info = st.session_state.tool_db[st.session_state.tool_db['MPR_Name'] == t_mpr.replace("BV","")]
             if tool_info.empty: tool_info = st.session_state.tool_db[st.session_state.tool_db['T_CNC'] == "T2"]
             
             ti_val = get_f('TI', bc) if tag in ['181','102'] else get_f('ZA', bc)
             z_abs = round((thickness - ti_val if tag in ['181','102'] else ti_val), 3)
-            
             geoid = clean_txt(re.search(r'EA="(\d+):', bc).group(1)) if re.search(r'EA="(\d+):', bc) else None
             pts = geometries.get(geoid, [[get_f('XA', bc), get_f('YA', bc)]]) if tag != '102' else [[get_f('XA', bc), get_f('YA', bc)]]
             
@@ -102,7 +89,6 @@ if upl:
                 'rpm': tool_info.iloc[0]['RPM'], 'is_final': z_abs <= 0.2 and tag != '102'
             })
 
-        # קיבוץ פעולות זהות לבלוקים
         grouped_ops = []
         for op in ops:
             found = False
@@ -112,18 +98,13 @@ if upl:
             if not found:
                 grouped_ops.append({'t_cnc': op['t_cnc'], 't_mpr': op['t_mpr'], 'desc': op['desc'], 'z_orig': op['z_orig'], 'is_final': op['is_final'], 'items': [op]})
 
-        # --- תצוגת בלוקים (Internal vs Final) ---
         with col_settings:
-            st.write(f"### 📦 בלוקים לביצוע: {f.name}")
+            st.write(f"### 📦 בלוקים: {f.name}")
             block_configs = {}
-            
-            # מיון: קודם Internal, בסוף Final
             sorted_blocks = sorted(grouped_ops, key=lambda x: x['is_final'])
-            
             for idx, block in enumerate(sorted_blocks):
                 label = "🔴 סופי (Final)" if block['is_final'] else "🔵 פנימי (Internal)"
                 with st.expander(f"{label}: {block['t_cnc']} ({block['desc']})", expanded=True):
-                    st.write(f"שם ב-MPR: {block['t_mpr']}")
                     z1 = st.number_input("עומק פסיעה 1", value=block['z_orig'], key=f"z1_{idx}_{f.name}")
                     passes = [z1]
                     if st.checkbox("הוסף פסיעה", key=f"add_{idx}_{f.name}"):
@@ -131,46 +112,32 @@ if upl:
                         passes.append(z2)
                     block_configs[idx] = passes
 
-        # --- ייצור NC ---
         line_n = 10
         def n(): nonlocal line_n; r = f"N{line_n}"; line_n += 10; return r
-        
-        nc_parts = ["%", f"({n()} DARWISH 47.0 - SOFTWARE OFFSET MASTER)", f"{n()} G90 G54 G21"]
+        nc_parts = ["%", f"({n()} DARWISH 47.0 MASTER - {f.name})", f"{n()} G90 G54 G21"]
         
         for idx, block in enumerate(sorted_blocks):
             nc_parts.extend([f"{n()} M05", f"{n()} {block['t_cnc']} M06", f"{n()} G43 H{block['t_cnc'].replace('T','')}", f"{n()} S{int(block['rpm'])} M03"])
-            
             for z_val in block_configs[idx]:
                 for item in block['items']:
-                    # חישוב אופסט תוכנה
                     path = calculate_offset_path(item['pts'], item['radius'])
                     start = path[0]
-                    # נחיתת מטוס (Ramp)
                     nc_parts.append(f"{n()} G00 X{start[0] + user_off_x - ramp_val:.3f} Y{start[1] + user_off_y:.3f}")
                     nc_parts.append(f"{n()} G01 Z{z_val:.3f} X{start[0] + user_off_x:.3f} F2000")
                     for p in path[1:]:
                         nc_parts.append(f"{n()} G01 X{p[0] + user_off_x:.3f} Y{p[1] + user_off_y:.3f} F{int(item['feed'])}")
                     nc_parts.append(f"{n()} G00 Z36.0")
-        
         nc_parts.extend([f"{n()} M05", f"{n()} M30", f"{n()} M200", "%"])
         
-        # --- ויזואליזציה ---
         with col_viewer:
             fig = go.Figure()
-            # שולחן המכונה
             fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="RoyalBlue", width=2))
-            
             for block in sorted_blocks:
                 for item in block['items']:
                     orig_x, orig_y = zip(*item['pts'])
                     fig.add_trace(go.Scatter(x=orig_x, y=orig_y, mode='lines', line=dict(dash='dash', color='gray'), hoverinfo='skip'))
-                    
                     off_pts = calculate_offset_path(item['pts'], item['radius'])
                     ox, oy = zip(*off_pts)
-                    fig.add_trace(go.Scatter(x=ox, y=oy, mode='lines', name=f"{block['t_cnc']} - {block['desc']}",
-                                            hovertemplate=f"כלי: {block['t_cnc']}<br>תיאור: {block['desc']}<br>עומק: {block['z_orig']}"))
-
-            fig.update_layout(title=f"תצוגה מקדימה: {f.name} (Zoom enabled)", width=800, height=900)
+                    fig.add_trace(go.Scatter(x=ox, y=oy, mode='lines', name=f"{block['t_cnc']}", hovertemplate=f"כלי: {block['t_cnc']}<br>עומק: {block['z_orig']}"))
             st.plotly_chart(fig, use_container_width=True)
-            
-            st.download_button(f"📥 הורד NC (גרסה 47.0)", "\n".join(nc_parts), f.name.replace(".mpr", ".nc"))
+            st.download_button(f"📥 הורד NC ל-{f.name}", "\n".join(nc_parts), f.name.replace(".mpr", ".nc"))
