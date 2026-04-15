@@ -24,7 +24,7 @@ with st.expander("🛠️ לשונית כלים (הגדרות מאסטר)", expa
 
 # --- 2. פונקציות מתמטיות (Software Offset & Ramping) ---
 def calculate_offset_path(points, tool_radius):
-    if tool_radius == 0: return points
+    if tool_radius <= 0: return points
     pts = np.array(points)
     new_pts = []
     for i in range(len(pts)):
@@ -34,6 +34,7 @@ def calculate_offset_path(points, tool_radius):
             v = pts[i] - pts[i-1]
         dist = np.linalg.norm(v)
         if dist == 0: continue
+        # וקטור נורמל לצידוד (G41 - שמאלה מהקו)
         n = np.array([-v[1], v[0]]) / dist
         new_pts.append((pts[i] + n * tool_radius).tolist())
     return new_pts
@@ -59,6 +60,8 @@ if upl:
     for f in upl:
         mpr_content = f.getvalue().decode('utf-8', errors='ignore')
         thickness = get_f('t', mpr_content, 19.0)
+        
+        # חילוץ גאומטריות
         geometries = {}
         sections = re.split(r'\](\d+)', mpr_content)
         for i in range(1, len(sections), 2):
@@ -70,12 +73,16 @@ if upl:
                     pts.append([yv, xv] if rotate_90 else [xv, yv])
             if pts: geometries[sections[i]] = pts
 
+        # ניתוח פעולות
         ops = []
         for m_match in re.finditer(r'<(102|105|130|181)(.*?)(?=<|\!|\[H)', mpr_content, re.DOTALL):
             tag, bc = m_match.group(1), m_match.group(2)
             t_mpr = clean_txt(re.search(r'(?:TNO|T_|DU)="([^"]*)"', bc).group(1)) if re.search(r'(?:TNO|T_|DU)="([^"]*)"', bc) else "142"
+            
+            # חיפוש נתוני כלי
             tool_info = st.session_state.tool_db[st.session_state.tool_db['MPR_Name'] == t_mpr.replace("BV","")]
-            if tool_info.empty: tool_info = st.session_state.tool_db[st.session_state.tool_db['T_CNC'] == "T2"]
+            if tool_info.empty:
+                tool_info = st.session_state.tool_db[st.session_state.tool_db['T_CNC'] == "T2"]
             
             ti_val = get_f('TI', bc) if tag in ['181','102'] else get_f('ZA', bc)
             z_abs = round((thickness - ti_val if tag in ['181','102'] else ti_val), 3)
@@ -86,9 +93,10 @@ if upl:
                 'tag': tag, 't_mpr': t_mpr, 't_cnc': tool_info.iloc[0]['T_CNC'], 
                 'desc': tool_info.iloc[0]['תיאור'], 'z_orig': z_abs, 'pts': pts,
                 'radius': tool_info.iloc[0]['קוטר'] / 2, 'feed': tool_info.iloc[0]['Feed'],
-                'rpm': tool_info.iloc[0]['RPM'], 'is_final': z_abs <= 0.2 and tag != '102'
+                'rpm': tool_info.iloc[0]['RPM'], 'is_final': (z_abs <= 0.2 and tag != '102')
             })
 
+        # קיבוץ לבלוקים
         grouped_ops = []
         for op in ops:
             found = False
@@ -96,12 +104,18 @@ if upl:
                 if g['t_cnc'] == op['t_cnc'] and g['z_orig'] == op['z_orig'] and g['is_final'] == op['is_final']:
                     g['items'].append(op); found = True; break
             if not found:
-                grouped_ops.append({'t_cnc': op['t_cnc'], 't_mpr': op['t_mpr'], 'desc': op['desc'], 'z_orig': op['z_orig'], 'is_final': op['is_final'], 'items': [op]})
+                grouped_ops.append({
+                    't_cnc': op['t_cnc'], 't_mpr': op['t_mpr'], 'desc': op['desc'], 
+                    'z_orig': op['z_orig'], 'is_final': op['is_final'], 'rpm': op['rpm'],
+                    'items': [op]
+                })
 
+        # תצוגה ועריכה
         with col_settings:
             st.write(f"### 📦 בלוקים: {f.name}")
             block_configs = {}
             sorted_blocks = sorted(grouped_ops, key=lambda x: x['is_final'])
+            
             for idx, block in enumerate(sorted_blocks):
                 label = "🔴 סופי (Final)" if block['is_final'] else "🔵 פנימי (Internal)"
                 with st.expander(f"{label}: {block['t_cnc']} ({block['desc']})", expanded=True):
@@ -112,22 +126,36 @@ if upl:
                         passes.append(z2)
                     block_configs[idx] = passes
 
-        line_n = 10
-        def n(): nonlocal line_n; r = f"N{line_n}"; line_n += 10; return r
-        nc_parts = ["%", f"({n()} DARWISH 47.0 MASTER - {f.name})", f"{n()} G90 G54 G21"]
+        # ייצור NC (שימוש במונה פשוט במקום nonlocal)
+        current_n = [10]
+        def get_n():
+            n_str = f"N{current_n[0]}"
+            current_n[0] += 10
+            return n_str
+
+        nc_parts = ["%", f"({get_n()} DARWISH 47.0 MASTER - {f.name})", f"{get_n()} G90 G54 G21"]
         
         for idx, block in enumerate(sorted_blocks):
-            nc_parts.extend([f"{n()} M05", f"{n()} {block['t_cnc']} M06", f"{n()} G43 H{block['t_cnc'].replace('T','')}", f"{n()} S{int(block['rpm'])} M03"])
+            nc_parts.extend([
+                f"{get_n()} M05", 
+                f"{get_n()} {block['t_cnc']} M06", 
+                f"{get_n()} G43 H{block['t_cnc'].replace('T','')}", 
+                f"{get_n()} S{int(block['rpm'])} M03"
+            ])
+            
             for z_val in block_configs[idx]:
                 for item in block['items']:
+                    # חישוב אופסט תוכנה (G40)
                     path = calculate_offset_path(item['pts'], item['radius'])
                     start = path[0]
-                    nc_parts.append(f"{n()} G00 X{start[0] + user_off_x - ramp_val:.3f} Y{start[1] + user_off_y:.3f}")
-                    nc_parts.append(f"{n()} G01 Z{z_val:.3f} X{start[0] + user_off_x:.3f} F2000")
+                    # נחיתת Ramp
+                    nc_parts.append(f"{get_n()} G00 X{start[0] + user_off_x - ramp_val:.3f} Y{start[1] + user_off_y:.3f}")
+                    nc_parts.append(f"{get_n()} G01 Z{z_val:.3f} X{start[0] + user_off_x:.3f} F2000")
                     for p in path[1:]:
-                        nc_parts.append(f"{n()} G01 X{p[0] + user_off_x:.3f} Y{p[1] + user_off_y:.3f} F{int(item['feed'])}")
-                    nc_parts.append(f"{n()} G00 Z36.0")
-        nc_parts.extend([f"{n()} M05", f"{n()} M30", f"{n()} M200", "%"])
+                        nc_parts.append(f"{get_n()} G01 X{p[0] + user_off_x:.3f} Y{p[1] + user_off_y:.3f} F{int(item['feed'])}")
+                    nc_parts.append(f"{get_n()} G00 Z36.0")
+        
+        nc_parts.extend([f"{get_n()} M05", f"{get_n()} M30", f"{get_n()} M200", "%"])
         
         with col_viewer:
             fig = go.Figure()
@@ -139,5 +167,6 @@ if upl:
                     off_pts = calculate_offset_path(item['pts'], item['radius'])
                     ox, oy = zip(*off_pts)
                     fig.add_trace(go.Scatter(x=ox, y=oy, mode='lines', name=f"{block['t_cnc']}", hovertemplate=f"כלי: {block['t_cnc']}<br>עומק: {block['z_orig']}"))
+            
             st.plotly_chart(fig, use_container_width=True)
             st.download_button(f"📥 הורד NC ל-{f.name}", "\n".join(nc_parts), f.name.replace(".mpr", ".nc"))
