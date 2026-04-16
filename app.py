@@ -4,8 +4,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 48.14 - PRODUCTION MASTER STANDARD
-st.set_page_config(page_title="Darwish 48.14 Production", layout="wide")
+# Darwish 48.15 - THE DARWISH PRODUCTION STANDARD
+st.set_page_config(page_title="Darwish 48.15 Master", layout="wide")
 
 # --- 1. מסד כלים קבוע (מכונת אבי) ---
 if 'tool_db' not in st.session_state:
@@ -24,10 +24,7 @@ if 'tool_db' not in st.session_state:
         {"T_CNC": "T45", "MPR_Name": "BV5", "תיאור": "מקדח 5 מילימטר עובר", "קוטר": 5.0, "RPM": 4500, "Feed": 1000}
     ])
 
-with st.expander("🛠️ מסד כלים קבוע (מכונת אבי)", expanded=False):
-    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_4814")
-
-# --- 2. ליבה מתמטית v14: Inset + Boundary Guard ---
+# --- 2. ליבה מתמטית v15 ---
 def is_point_in_poly(x, y, poly):
     n = len(poly)
     inside = False
@@ -41,7 +38,7 @@ def is_point_in_poly(x, y, poly):
         p1x, p1y = p2x, p2y
     return inside
 
-def calculate_path_v4814(pts, r, mpr_rk, is_pocket=False, is_boring=False):
+def calculate_path_v4815(pts, r, mpr_rk, is_pocket=False, is_boring=False):
     if is_boring or r <= 0 or len(pts) < 2: return pts
     pts_arr = np.array(pts)
     is_ccw = (sum((pts_arr[i][0] * pts_arr[(i+1)%len(pts_arr)][1] - pts_arr[(i+1)%len(pts_arr)][0] * pts_arr[i][1]) for i in range(len(pts_arr))) / 2.0) > 0
@@ -49,17 +46,14 @@ def calculate_path_v4814(pts, r, mpr_rk, is_pocket=False, is_boring=False):
     if not is_pocket:
         side = 1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0
         if side == 0: return pts
-    
-    n = len(pts_arr)
     shifted_lines = []
-    for i in range(n - 1):
+    for i in range(len(pts_arr) - 1):
         p1, p2 = pts_arr[i], pts_arr[i+1]
         v = p2 - p1
         mag = np.linalg.norm(v)
         if mag == 0: continue
         normal = side * np.array([-v[1], v[0]]) / mag
         shifted_lines.append((p1 + normal * r, p2 + normal * r))
-        
     new_path = []
     for i in range(len(shifted_lines)):
         l1, l2 = shifted_lines[i], shifted_lines[(i + 1) % len(shifted_lines)]
@@ -81,14 +75,14 @@ def get_f(key, block, default=0.0):
     return float(m.group(1).strip()) if m else default
 
 # --- 3. ממשק משתמש וניהול בלוקים ---
-st.title("🏭 דרוויש 48.14 - PRODUCTION STANDARD")
+st.title("🏭 דרוויש 48.15 - MASTER PRODUCTION")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
     st.subheader("הגדרות ייצור")
     rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=True)
-    off_x = st.number_input("תוספת הרחקה X", value=0.0)
-    off_y = st.number_input("תוספת הרחקה Y", value=0.0)
+    off_x = st.number_input("תוספת הרחקה X (מילימטר)", value=0.0)
+    off_y = st.number_input("תוספת הרחקה Y (מילימטר)", value=0.0)
     ramp_len = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
     upl = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 
@@ -118,80 +112,81 @@ if upl:
             t_info = st.session_state.tool_db[st.session_state.tool_db['MPR_Name'] == t_mpr.replace("BV","")]
             if t_info.empty: t_info = st.session_state.tool_db[st.session_state.tool_db['T_CNC'] == "T2"]
             
-            ti = get_f('TI', bc)
-            z_abs = round((thick - ti), 3) if tag in ['181', '102', '100'] else round(get_f('ZA', bc), 3)
-            geoid = re.search(r'EA="(\d+):', bc).group(1).strip() if re.search(r'EA="(\d+):', bc) else "Drill" if tag == '100' else "None"
-            pts = geos.get(geoid, [[get_f('XA', bc), get_f('YA', bc)]]) if tag != '102' else [[wp_w - get_f('YA', bc), get_f('XA', bc)] if rotate else [get_f('XA', bc), get_f('YA', bc)]]
-            if tag == '100': pts = [[wp_w - get_f('YA', bc), get_f('XA', bc)] if rotate else [get_f('XA', bc), get_f('YA', bc)]]
+            z_abs = round((thick - get_f('TI', bc)), 3) if tag in ['181', '102', '100'] else round(get_f('ZA', bc), 3)
+            geoid = re.search(r'EA="(\d+):', bc).group(1).strip() if re.search(r'EA="(\d+):', bc) else "Drill"
+            pts = geos.get(geoid, [[get_f('XA', bc), get_f('YA', bc)]])
+            if rotate and tag != '102' and tag != '100':
+                pts = [[wp_w - p[1], p[0]] for p in pts]
+            elif rotate and tag == '100':
+                pts = [[wp_w - get_f('YA', bc), get_f('XA', bc)]]
 
-            # לוגיקת סיווג מאוחדת (Final vs Inside vs Drill)
-            is_boring_bit = t_info.iloc[0]['T_CNC'] in ['T6', 'T49', 'T47', 'T44', 'T45']
-            purpose = "drill" if is_boring_bit else ("final" if z_abs <= 0.5 and tag != '102' else "inside")
+            # לוגיקת סיווג מאוחדת (Final threshold 0.05mm)
+            is_boring = t_info.iloc[0]['T_CNC'] in ['T6', 'T49', 'T47', 'T44', 'T45']
+            purpose = "Drill" if is_boring else ("Final" if z_abs <= 0.05 and tag != '102' else "Inside")
             
             raw_ops.append({
                 't_cnc': t_info.iloc[0]['T_CNC'], 'desc': t_info.iloc[0]['תיאור'], 'z': z_abs, 'pts': pts, 
                 'rad': t_info.iloc[0]['קוטר']/2, 'f': t_info.iloc[0]['Feed'], 's': t_info.iloc[0]['RPM'],
                 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL",
-                'is_pocket': (tag == '181'), 'is_boring': (tag == '100'), 'purpose': purpose, 'ti': ti
+                'is_pocket': (tag == '181'), 'is_boring': (tag == '100'), 'purpose': purpose
             })
 
-        # --- איחוד בלוקים (כלי + מטרה בלבד) ---
+        # --- איחוד בלוקים לפי גאומטריה (Path Merge) ---
         tool_blocks = {}
         for op in raw_ops:
-            key = (op['t_cnc'], op['purpose'])
+            # מפתח איחוד: כלי + גאומטריה (כדי לאחד פסיעות של אותו מסלול)
+            key = (op['t_cnc'], str(op['pts']))
             if key not in tool_blocks:
-                tool_blocks[key] = {'t_cnc': op['t_cnc'], 'purpose': op['purpose'], 'items': [], 's': op['s']}
-            tool_blocks[key]['items'].append(op)
+                tool_blocks[key] = {**op, 'depths': [], 'final_label': op['purpose']}
+            if op['z'] not in tool_blocks[key]['depths'] and op['z'] < thick: # סינון פסיעות סרק בעובי הפלטה
+                tool_blocks[key]['depths'].append(op['z'])
+            if op['purpose'] == "Final": tool_blocks[key]['final_label'] = "Final"
 
         with col_cfg:
             st.write(f"### 📦 ניהול בלוקים: {f_file.name}")
             final_configs = []
             for i, (key, b) in enumerate(tool_blocks.items()):
-                label = "🟢 Drill" if b['purpose']=="drill" else "🔴 Final" if b['purpose']=="final" else "🔵 Inside"
+                label = "🟢 Drill" if b['is_boring'] else f"🔴 {b['final_label']}" if b['final_label']=="Final" else "🔵 Inside"
                 with st.expander(f"{label}: {b['t_cnc']}"):
-                    active = st.checkbox("כלול", value=True, key=f"act_{i}_{f_file.name}")
+                    active = st.checkbox("כלול", value=True, key=f"act_{i}")
+                    depth_controls = []
+                    for di, d in enumerate(sorted(b['depths'], reverse=True)):
+                        c1, c2 = st.columns([1, 4])
+                        with c1: use = st.checkbox("", value=True, key=f"use_{i}_{di}")
+                        with c2: val = st.number_input(f"Z {di+1}", value=float(round(d, 3)), format="%.3f", key=f"z_{i}_{di}")
+                        depth_controls.append({'use': use, 'val': val})
                     
-                    all_depths = sorted(list(set(it['z'] for it in b['items'])), reverse=True)
-                    active_depths = []
-                    
-                    if b['purpose'] == 'drill':
-                        for it in b['items']:
-                            if it['ti'] == 0: st.warning(f"שים לב: TI=0 בקידוח {b['t_cnc']}")
-                    
-                    for di, d in enumerate(all_depths):
-                        val = st.number_input(f"עומק פסיעה {di+1}", value=float(round(d, 3)), format="%.3f", key=f"z_{i}_{di}_{f_file.name}")
-                        active_depths.append(val)
-                    
-                    add_man = st.checkbox("➕ הוסף פסיעה ידנית", key=f"add_{i}_{f_file.name}")
+                    add_man = st.checkbox("➕ הוסף פסיעה ידנית", key=f"add_{i}")
                     if add_man:
-                        manual_z = st.number_input("עומק פסיעה נוסף", value=-0.200, format="%.3f", key=f"man_{i}_{f_file.name}")
-                        active_depths.append(manual_z)
+                        manual_z = st.number_input("Z ידני", value=-0.200, format="%.3f", key=f"man_{i}")
+                        depth_controls.append({'use': True, 'val': manual_z})
                         
-                    final_configs.append({'active': active, 'depths': active_depths, 'block': b, 'id': i})
+                    final_configs.append({'active': active, 'depths': depth_controls, 'block': b, 'id': i})
 
-            order = st.multiselect("סדר עבודה:", options=[c['id'] for c in final_configs if c['active']], default=[c['id'] for c in final_configs if c['active']], format_func=lambda x: f"{final_configs[x]['block']['t_cnc']} {final_configs[x]['block']['purpose']}")
+            order = st.multiselect("סדר עבודה:", options=[c['id'] for c in final_configs if c['active']], default=[c['id'] for c in final_configs if c['active']], format_func=lambda x: f"{final_configs[x]['block']['t_cnc']} {final_configs[x]['block']['final_label']}")
 
-        # --- הפקה אחודה (Master Output) ---
-        nc_full = ["%", f"(N10 {f_file.name} - DARWISH 48.14)", "N20 G90 G54 G21"]
+        # --- הפקה אחודה (Master NC) ---
+        nc_full = ["%", f"(N10 {f_file.name} - DARWISH 48.15)", "N20 G90 G54 G21"]
         n_c = 30
         for idx in order:
             cfg = final_configs[idx]; b = cfg['block']
             nc_full.extend([f"N{n_c} M05", f"N{n_c+5} {b['t_cnc']} M06", f"N{n_c+10} G43 H{b['t_cnc'][1:]}", f"N{n_c+15} S{int(b['s'])} M03"])
             n_c += 20
-            for zv in cfg['depths']:
-                for it in b['items']:
-                    path = calculate_path_v4814(it['pts'], it['rad'], it['rk'], it['is_pocket'], it['is_boring'])
-                    c_ramp = 0 if (it['is_pocket'] or it['is_boring']) else ramp_len
-                    for pi, p in enumerate(path):
-                        nx, ny = p[0] + off_x, p[1] + off_y
-                        if pi == 0:
-                            nc_full.append(f"N{n_c} G00 X{nx-c_ramp:.3f} Y{ny:.3f}")
-                            nc_full.append(f"N{n_c+5} G01 Z{zv:.3f} X{nx:.3f} F2000")
-                            n_c += 10
-                        elif not it['is_boring']:
-                            nc_full.append(f"N{n_c} G01 X{nx:.3f} Y{ny:.3f} F{int(it['f'])}")
-                            n_c += 5
-                    nc_full.append(f"N{n_c} G00 Z36.0"); n_c += 5
+            for depth_item in cfg['depths']:
+                if not depth_item['use']: continue
+                zv = depth_item['val']
+                path = calculate_path_v4815(b['pts'], b['rad'], b['rk'], b['is_pocket'], b['is_boring'])
+                c_ramp = 0 if (b['is_pocket'] or b['is_boring']) else ramp_len
+                for pi, p in enumerate(path):
+                    nx, ny = p[0] + off_x, p[1] + off_y
+                    if pi == 0:
+                        nc_full.append(f"N{n_c} G00 X{nx-c_ramp:.3f} Y{ny:.3f}")
+                        nc_full.append(f"N{n_c+5} G01 Z{zv:.3f} X{nx:.3f} F2000")
+                        n_c += 10
+                    elif not b['is_boring']:
+                        nc_full.append(f"N{n_c} G01 X{nx:.3f} Y{ny:.3f} F{int(b['f'])}")
+                        n_c += 5
+                nc_full.append(f"N{n_c} G00 Z36.0"); n_c += 5
         nc_full.extend([f"N{n_c} M05", f"N{n_c+5} M30", "%"])
         
         st.subheader("📥 ייצוא סופי")
@@ -199,14 +194,11 @@ if upl:
 
         with col_vis:
             fig = go.Figure()
-            # חישוב Bounding Box לזום אוטומטי
             all_x, all_y = [], []
             for cfg in final_configs:
                 if cfg['active']:
-                    for it in cfg['block']['items']:
-                        for p in it['pts']:
-                            all_x.append(p[0]); all_y.append(p[1])
-            
+                    for p in cfg['block']['pts']:
+                        all_x.append(p[0]); all_y.append(p[1])
             if all_x:
                 min_x, max_x = min(all_x), max(all_x)
                 min_y, max_y = min(all_y), max(all_y)
@@ -217,12 +209,9 @@ if upl:
             fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=wp_w+off_x, y1=3050, line=dict(color="BurlyWood", width=3))
             
             for idx in order:
-                b = final_configs[idx]['block']
-                for it in b['items']:
-                    ox, oy = zip(*it['pts'])
-                    fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color="blue" if b['purpose']=="inside" else "red", width=1), showlegend=False))
-                    path = calculate_path_v4814(it['pts'], it['rad'], it['rk'], it['is_pocket'], it['is_boring'])
-                    px, py = zip(*path)
-                    color = "green" if it['is_boring'] else "yellow"
-                    fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines+markers' if it['is_boring'] else 'lines', line=dict(color=color, dash="dash" if not it['is_boring'] else None, width=1.5), showlegend=False))
+                cfg = final_configs[idx]; b = cfg['block']
+                path = calculate_path_v4815(b['pts'], b['rad'], b['rk'], b['is_pocket'], b['is_boring'])
+                px, py = zip(*path)
+                color = "green" if b['is_boring'] else "yellow" if b['final_label']=="Final" else "blue"
+                fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines+markers' if b['is_boring'] else 'lines', line=dict(color=color, dash="dash" if not b['is_boring'] else None, width=1.5), showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
