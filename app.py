@@ -4,8 +4,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 47.8 - THE WORKSHOP FINAL (CCW ROTATION + OFFSET FLIP)
-st.set_page_config(page_title="Darwish 47.8 Production", layout="wide")
+# Darwish 47.9 - WINDING-BASED OFFSET + CCW ROTATION FIX
+st.set_page_config(page_title="Darwish 47.9 Production", layout="wide")
 
 # --- 1. לשונית כלים ---
 if 'tool_db' not in st.session_state:
@@ -19,21 +19,42 @@ if 'tool_db' not in st.session_state:
     ])
 
 with st.expander("🛠️ לשונית כלים (ניהול מאסטר)", expanded=False):
-    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_478")
+    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_479")
 
-# --- 2. מנוע מתמטי ---
-def calculate_miter_offset(pts, r, direction="left"):
+# --- 2. מנוע מתמטי חכם (Winding Aware Offset) ---
+def get_winding(pts):
+    """מחזירה את שטח הפוליגון. חיובי = CCW, שלילי = CW"""
+    area = 0
+    for i in range(len(pts)):
+        p1, p2 = pts[i], pts[(i + 1) % len(pts)]
+        area += (p1[0] * p2[1] - p2[0] * p1[1])
+    return area / 2.0
+
+def calculate_miter_offset_v2(pts, r, is_external, mpr_rk):
     if r <= 0: return pts
     pts_arr = np.array(pts)
+    is_ccw = get_winding(pts) > 0
+    
+    # לוגיקת צד:
+    # בקונטור חיצוני (T2) נרצה תמיד להיות מחוץ לחומר.
+    # בחריץ פנימי (T4) נרצה תמיד להיות בתוך הגאומטריה.
+    if is_external:
+        # WRKR ב-CCW זה פנימה, נהפוך כדי לצאת החוצה.
+        side = 1 if is_ccw else -1
+        if mpr_rk == "WRKR": side *= -1
+    else:
+        # פנימי - הפוך מהחיצוני
+        side = -1 if is_ccw else 1
+        if mpr_rk == "WRKR": side *= -1
+
     n_pts = len(pts_arr)
     offset_path = []
     normals = []
-    # היפוך לוגי: בגרסה 47.7 הצדדים היו הפוכים. כאן החלפנו את כיוון המכפיל.
-    side = -1 if direction == "left" else 1 
     for i in range(n_pts - 1):
         v = pts_arr[i+1] - pts_arr[i]
         mag = np.linalg.norm(v)
         normals.append(side * np.array([-v[1], v[0]]) / mag if mag != 0 else np.array([0,0]))
+        
     for i in range(n_pts):
         if i == 0: offset_path.append(pts_arr[0] + normals[0] * r)
         elif i == n_pts - 1: offset_path.append(pts_arr[-1] + normals[-1] * r)
@@ -49,8 +70,8 @@ def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1).strip()) if m else default
 
-# --- 3. ממשק ייצור ---
-st.title("🏭 מרכז ייצור דרוויש 47.8")
+# --- 3. ממשק משתמש ---
+st.title("🏭 מרכז ייצור דרוויש 47.9")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
@@ -64,8 +85,6 @@ with col_cfg:
 if upl:
     for f_file in upl:
         mpr = f_file.getvalue().decode('utf-8', errors='ignore')
-        
-        # חילוץ נתוני פלטה
         wp_block = re.search(r'\[001(.*?)\]', mpr, re.DOTALL)
         wp_l = get_f('l', wp_block.group(1)) if wp_block else 2440.0
         wp_w = get_f('w', wp_block.group(1)) if wp_block else 1220.0
@@ -78,7 +97,6 @@ if upl:
             for el in re.split(r'\$E\d+', parts[i+1]):
                 xm, ym = re.search(r'X=([\d.-]+)', el), re.search(r'Y=([\d.-]+)', el)
                 if xm and ym:
-                    # סיבוב חכם: X_new = W - Y_old, Y_new = X_old (מביא את הפינה העליונה-שמאלית לתחתונה-שמאלית)
                     px, py = float(xm.group(1)), float(ym.group(1))
                     if rotate: pts.append([wp_w - py, px])
                     else: pts.append([px, py])
@@ -95,7 +113,6 @@ if upl:
             z_abs = round((thick - ti_val if tag in ['181','102'] else ti_val), 3)
             geoid = re.search(r'EA="(\d+):', bc).group(1).strip() if re.search(r'EA="(\d+):', bc) else None
             
-            # עיבוד נקודות לסיבוב גם בבלוקים ללא EA
             if tag == '102':
                 xa, ya = get_f('XA', bc), get_f('YA', bc)
                 raw_pts = [[wp_w - ya, xa]] if rotate else [[xa, ya]]
@@ -103,13 +120,13 @@ if upl:
                 raw_pts = geos.get(geoid, [[get_f('XA', bc), get_f('YA', bc)]])
             
             rk_val = re.search(r'RK="([^"]*)"', bc)
-            direction = "right" if rk_val and "WRKR" in rk_val.group(1) else "left"
+            mpr_rk = rk_val.group(1).strip() if rk_val else "WRKL"
 
             ops.append({
                 't_cnc': t_info.iloc[0]['T_CNC'], 'desc': t_info.iloc[0]['תיאור'], 
                 'z': z_abs, 'pts': raw_pts, 'rad': t_info.iloc[0]['קוטר']/2, 
                 'f': t_info.iloc[0]['Feed'], 's': t_info.iloc[0]['RPM'],
-                'final': (z_abs <= 0.2 and tag != '102'), 'dir': direction
+                'final': (z_abs <= 0.2 and tag != '102'), 'rk': mpr_rk
             })
 
         tool_groups = {}
@@ -138,7 +155,7 @@ if upl:
             full_order = order + final_ids
 
         # ייצור NC
-        nc = ["%", f"(N10 DARWISH 47.8 FINAL)", "N20 G90 G54 G21"]
+        nc = ["%", f"(N10 DARWISH 47.9 FINAL)", "N20 G90 G54 G21"]
         n_c = 30
         for b_id in full_order:
             b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
@@ -146,7 +163,7 @@ if upl:
             n_c += 20
             for zv in b_cfg['passes']:
                 for it in group['items']:
-                    path = calculate_miter_offset(it['pts'], it['rad'], it['dir'])
+                    path = calculate_miter_offset_v2(it['pts'], it['rad'], group['final'], it['rk'])
                     for pi, p in enumerate(path):
                         nx, ny = p[0] + off_x, p[1] + off_y
                         if pi == 0:
@@ -161,10 +178,8 @@ if upl:
             fig = go.Figure()
             fig.update_layout(dragmode='pan', yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
             
-            # גבולות פלטה (חום/כתום)
             pl, pw = (wp_w, wp_l) if rotate else (wp_l, wp_w)
             fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=pl+off_x, y1=pw+off_y, line=dict(color="BurlyWood", width=3), fillcolor="rgba(222, 184, 135, 0.05)")
-            # שולחן מכונה
             fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="RoyalBlue", width=1, dash="dot"))
 
             for b_id in full_order:
@@ -172,11 +187,9 @@ if upl:
                 for it in group['items']:
                     ox, oy = zip(*it['pts'])
                     color = "blue" if group['final'] else "red"
-                    # גאומטריה רציפה
                     fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2.5), name=f"חלק: {group['t_cnc']}", showlegend=False))
-                    # מסלול מרוסק צהוב
-                    px, py = zip(*calculate_miter_offset(it['pts'], it['rad'], it['dir']))
+                    px, py = zip(*calculate_miter_offset_v2(it['pts'], it['rad'], group['final'], it['rk']))
                     fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5), name=f"מסלול: {group['t_cnc']}"))
             
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-            st.download_button(f"📥 הורד NC (גרסה 47.8)", "\n".join(nc), f"{f_file.name}_v478.nc")
+            st.download_button(f"📥 הורד NC (גרסה 47.9)", "\n".join(nc), f"{f_file.name}_v479.nc")
