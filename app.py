@@ -4,10 +4,10 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 48.5 - MITER CLIPPING + INTERFACE RESTORE + DEPTH SYNC
-st.set_page_config(page_title="Darwish 48.5 Production", layout="wide")
+# Darwish 48.6 - THE INSET PROTOCOL (EYAL'S LOGIC) + FULL UI
+st.set_page_config(page_title="Darwish 48.6 Production", layout="wide")
 
-# --- 1. אבן יסוד: ניהול כלים מלא (UI RESTORE) ---
+# --- 1. שכבת שימור: ניהול כלים (UI RESTORE) ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
         {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "End Mill 40mm", "קוטר": 40.0, "RPM": 18000, "Feed": 12000},
@@ -18,17 +18,34 @@ if 'tool_db' not in st.session_state:
         {"T_CNC": "T44", "MPR_Name": "BV5", "תיאור": "Drill 5mm", "קוטר": 5.0, "RPM": 4500, "Feed": 1200}
     ])
 
-with st.expander("🛠️ ניהול כלים (אבן יסוד הממשק)", expanded=True):
-    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_485")
+with st.expander("🛠️ ניהול כלים (אבן יסוד)", expanded=True):
+    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_486")
 
-# --- 2. מנוע גאומטרי v8 - פתרון ה"שפיץ" (Miter Clipping) ---
-def calculate_miter_offset_v8(pts, r, mpr_rk):
+# --- 2. ליבה מתמטית - Inset vs Offset ---
+
+def get_winding(pts):
+    area = 0
+    for i in range(len(pts)):
+        p1, p2 = pts[i], pts[(i + 1) % len(pts)]
+        area += (p1[0] * p2[1] - p2[0] * p1[1])
+    return area / 2.0
+
+def calculate_path(pts, r, mpr_rk, is_pocket=False):
+    """
+    מנוע משולב:
+    כרסום רגיל -> אופסט וקטורי (v5).
+    פוקט -> יצירת גאומטריה פנימית מוקטנת (הרעיון של אייל).
+    """
     if r <= 0: return pts
     pts_arr = np.array(pts)
+    is_ccw = get_winding(pts) > 0
     
-    # ציות ל-RK של פייטה: WRKL = 1 (שמאל), WRKR = -1 (ימין)
-    side = 1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0
-    if side == 0: return pts
+    # בחירת צד: פוקט תמיד פנימה, כרסום לפי RK
+    if is_pocket:
+        side = 1 if is_ccw else -1
+    else:
+        side = 1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0
+        if side == 0: return pts
 
     n_pts = len(pts_arr)
     offset_path = []
@@ -38,8 +55,9 @@ def calculate_miter_offset_v8(pts, r, mpr_rk):
         mag = np.linalg.norm(v)
         normals.append(side * np.array([-v[1], v[0]]) / mag if mag != 0 else np.array([0,0]))
     
-    # הגבלת היסט למניעת חריגה בפינות חדות (Miter Limit)
-    clip_limit = r * 1.2 
+    # מגביל אורך לפינות חדות (למניעת שפיצים בכרסום רגיל)
+    miter_limit = r * 1.5 
+    
     for i in range(n_pts):
         if i == 0: offset_path.append(pts_arr[0] + normals[0] * r)
         elif i == n_pts - 1: offset_path.append(pts_arr[-1] + normals[-1] * r)
@@ -50,22 +68,21 @@ def calculate_miter_offset_v8(pts, r, mpr_rk):
             scale = 2.0 / m_mag_sq if m_mag_sq > 1e-6 else 1.0
             
             offset_vec = miter * scale * r
-            # קטימה (Clipping) אם השפיץ חורג מהגבול
-            if np.linalg.norm(offset_vec) > clip_limit:
-                offset_vec = (offset_vec / np.linalg.norm(offset_vec)) * clip_limit
+            # קטימה בפינות חדות (Clipping)
+            if np.linalg.norm(offset_vec) > miter_limit:
+                offset_vec = (offset_vec / np.linalg.norm(offset_vec)) * miter_limit
             offset_path.append(pts_arr[i] + offset_vec)
     
-    # סגירת מסלול מובנית (Path Closing)
-    if n_pts > 2 and not np.allclose(offset_path[0], offset_path[-1]):
-        offset_path.append(offset_path[0])
+    # סגירת מסלול מפורשת
+    if n_pts > 2: offset_path.append(offset_path[0])
     return [p.tolist() for p in offset_path]
 
 def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1).strip()) if m else default
 
-# --- 3. ממשק משתמש ---
-st.title("🏭 דרוויש 48.5 - INDUSTRIAL NC")
+# --- 3. ממשק ייצור ---
+st.title("🏭 דרוויש 48.6 - THE INSET PROTOCOL")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
@@ -102,7 +119,7 @@ if upl:
             t_info = st.session_state.tool_db[st.session_state.tool_db['MPR_Name'] == t_mpr.replace("BV","")]
             if t_info.empty: t_info = st.session_state.tool_db[st.session_state.tool_db['T_CNC'] == "T2"]
             
-            # סנכרון עומקים מוחלט (Z-Sync)
+            # סנכרון עומקים (WoodWOP Z-Sync)
             if tag in ['181', '102']: z_abs = round((thick - get_f('TI', bc)), 3)
             else: z_abs = round(get_f('ZA', bc), 3)
             
@@ -113,8 +130,8 @@ if upl:
                 't_cnc': t_info.iloc[0]['T_CNC'], 'desc': t_info.iloc[0]['תיאור'], 
                 'z': z_abs, 'pts': raw_pts, 'rad': t_info.iloc[0]['קוטר']/2, 
                 'f': t_info.iloc[0]['Feed'], 's': t_info.iloc[0]['RPM'],
-                'final': (z_abs <= 0.2 and tag != '102'), 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL",
-                'is_pocket': (tag == '181')
+                'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL",
+                'is_pocket': (tag == '181'), 'final': (z_abs <= 0.2 and tag != '102')
             })
 
         tool_groups = {}
@@ -133,11 +150,11 @@ if upl:
                     active = st.checkbox("כלול", value=True, key=f"act_{i}")
                     depths = sorted(list(set(it['z'] for it in group['items'])), reverse=True)
                     final_depths = [st.number_input(f"עומק פסיעה {di+1}", value=d, key=f"z_{i}_{di}") for di, d in enumerate(depths)]
-                    block_configs.append({'id': i, 'active': active, 'passes': final_depths, 'final': group['final'], 'key': key})
+                    block_configs.append({'id': i, 'active': active, 'passes': final_depths, 'key': key})
             order = st.multiselect("סדר כלים:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]}")
 
         # ייצור NC
-        nc = ["%", f"(N10 DARWISH 48.5 PRODUCTION)", "N20 G90 G54 G21"]
+        nc = ["%", f"(N10 DARWISH 48.6 PRODUCTION)", "N20 G90 G54 G21"]
         n_c = 30
         for b_id in order:
             b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
@@ -145,8 +162,7 @@ if upl:
             n_c += 20
             for zv in b_cfg['passes']:
                 for it in group['items']:
-                    path = calculate_miter_offset_v8(it['pts'], it['rad'], it['rk'])
-                    # צניחה אנכית לפוקטים (Vertical Plunge)
+                    path = calculate_path(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                     current_ramp = 0 if it['is_pocket'] else ramp_len
                     for pi, p in enumerate(path):
                         nx, ny = p[0] + off_x, p[1] + off_y
@@ -162,14 +178,13 @@ if upl:
             fig = go.Figure()
             fig.update_layout(dragmode='pan', yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
             fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=wp_w+off_x, y1=3050, line=dict(color="BurlyWood", width=3), fillcolor="rgba(222, 184, 135, 0.05)")
-            fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="RoyalBlue", width=1, dash="dot"))
             for b_id in order:
                 group = tool_groups[block_configs[b_id]['key']]
                 for it in group['items']:
                     ox, oy = zip(*it['pts'])
                     color = "blue" if it['t_cnc'] == 'T2' else "red"
                     fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2.5), showlegend=False))
-                    px, py = zip(*calculate_miter_offset_v8(it['pts'], it['rad'], it['rk']))
+                    px, py = zip(*calculate_path(it['pts'], it['rad'], it['rk'], it['is_pocket']))
                     fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5)))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-            st.download_button(f"📥 הורד NC (גרסה 48.5)", "\n".join(nc), f"{f_file.name}_v485.nc")
+            st.download_button(f"📥 הורד NC (גרסה 48.6)", "\n".join(nc), f"{f_file.name}_v486.nc")
