@@ -4,10 +4,9 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 47.9 - WINDING-BASED OFFSET + CCW ROTATION FIX
-st.set_page_config(page_title="Darwish 47.9 Production", layout="wide")
+# Darwish 48.1 - FINAL INDUSTRIAL VERSION
+st.set_page_config(page_title="Darwish 48.1 Production", layout="wide")
 
-# --- 1. לשונית כלים ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
         {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "End Mill 40mm", "קוטר": 40.0, "RPM": 18000, "Feed": 12000},
@@ -18,34 +17,28 @@ if 'tool_db' not in st.session_state:
         {"T_CNC": "T44", "MPR_Name": "BV5", "תיאור": "Drill 5mm", "קוטר": 5.0, "RPM": 4500, "Feed": 1200}
     ])
 
-with st.expander("🛠️ לשונית כלים (ניהול מאסטר)", expanded=False):
-    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_479")
-
-# --- 2. מנוע מתמטי חכם (Winding Aware Offset) ---
 def get_winding(pts):
-    """מחזירה את שטח הפוליגון. חיובי = CCW, שלילי = CW"""
     area = 0
     for i in range(len(pts)):
         p1, p2 = pts[i], pts[(i + 1) % len(pts)]
         area += (p1[0] * p2[1] - p2[0] * p1[1])
     return area / 2.0
 
-def calculate_miter_offset_v2(pts, r, is_external, mpr_rk):
+def calculate_miter_offset_v4(pts, r, tool_id, mpr_rk):
     if r <= 0: return pts
     pts_arr = np.array(pts)
     is_ccw = get_winding(pts) > 0
     
-    # לוגיקת צד:
-    # בקונטור חיצוני (T2) נרצה תמיד להיות מחוץ לחומר.
-    # בחריץ פנימי (T4) נרצה תמיד להיות בתוך הגאומטריה.
-    if is_external:
-        # WRKR ב-CCW זה פנימה, נהפוך כדי לצאת החוצה.
+    # לוגיקת צידוד תעשייתית:
+    # עבור כלים פנימיים (T4, T11) - כוח לכיוון המרכז (Inside)
+    if tool_id in ['T4', 'T11']:
         side = 1 if is_ccw else -1
-        if mpr_rk == "WRKR": side *= -1
-    else:
-        # פנימי - הפוך מהחיצוני
+    # עבור כלי סופי (T2) - כוח החוצה (Outside)
+    elif tool_id == 'T2':
         side = -1 if is_ccw else 1
-        if mpr_rk == "WRKR": side *= -1
+    # עבור כלים אחרים - ציות ל-RK
+    else:
+        side = 1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0
 
     n_pts = len(pts_arr)
     offset_path = []
@@ -54,7 +47,7 @@ def calculate_miter_offset_v2(pts, r, is_external, mpr_rk):
         v = pts_arr[i+1] - pts_arr[i]
         mag = np.linalg.norm(v)
         normals.append(side * np.array([-v[1], v[0]]) / mag if mag != 0 else np.array([0,0]))
-        
+    
     for i in range(n_pts):
         if i == 0: offset_path.append(pts_arr[0] + normals[0] * r)
         elif i == n_pts - 1: offset_path.append(pts_arr[-1] + normals[-1] * r)
@@ -70,15 +63,14 @@ def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1).strip()) if m else default
 
-# --- 3. ממשק משתמש ---
-st.title("🏭 מרכז ייצור דרוויש 47.9")
+st.title("🏭 מרכז ייצור דרוויש 48.1")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
     st.subheader("הגדרות ייצור")
     rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=True)
-    off_x = st.number_input("תוספת הרחקה X", value=0.0)
-    off_y = st.number_input("תוספת הרחקה Y", value=0.0)
+    off_x = st.number_input("תוספת הרחקה X (מילימטר)", value=0.0)
+    off_y = st.number_input("תוספת הרחקה Y (מילימטר)", value=0.0)
     ramp_len = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
     upl = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 
@@ -142,28 +134,23 @@ if upl:
             for i, (key, group) in enumerate(tool_groups.items()):
                 label = "🔴 סופי" if group['final'] else "🔵 פנימי"
                 with st.expander(f"{label}: {group['t_cnc']} ({group['desc']})"):
-                    active = st.checkbox("כלול בייצור", value=True, key=f"act_{i}")
+                    active = st.checkbox("כלול בייצור", value=True, key=f"act_{i}_{f_file.name}")
                     depths = sorted(list(set(it['z'] for it in group['items'])), reverse=True)
-                    final_depths = []
-                    for di, d in enumerate(depths):
-                        final_depths.append(st.number_input(f"עומק פסיעה {di+1}", value=d, key=f"z_{i}_{di}"))
+                    final_depths = [st.number_input(f"עומק פסיעה {di+1}", value=d, key=f"z_{i}_{di}_{f_file.name}") for di, d in enumerate(depths)]
                     block_configs.append({'id': i, 'active': active, 'passes': final_depths, 'final': group['final'], 'key': key})
 
-            order_ids = [i for i, b in enumerate(block_configs) if b['active'] and not b['final']]
-            final_ids = [i for i, b in enumerate(block_configs) if b['active'] and b['final']]
-            order = st.multiselect("סדר כלים:", options=order_ids, default=order_ids, format_func=lambda x: f"{block_configs[x]['key'][0]}")
-            full_order = order + final_ids
+            order = st.multiselect("סדר כלים:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]} ({block_configs[x]['key'][1]})")
 
         # ייצור NC
-        nc = ["%", f"(N10 DARWISH 47.9 FINAL)", "N20 G90 G54 G21"]
+        nc = ["%", f"(N10 DARWISH 48.1 FINAL)", "N20 G90 G54 G21"]
         n_c = 30
-        for b_id in full_order:
+        for b_id in order:
             b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
             nc.extend([f"N{n_c} M05", f"N{n_c+5} {group['t_cnc']} M06", f"N{n_c+10} G43 H{group['t_cnc'][1:]}", f"N{n_c+15} S{int(group['s'])} M03"])
             n_c += 20
             for zv in b_cfg['passes']:
                 for it in group['items']:
-                    path = calculate_miter_offset_v2(it['pts'], it['rad'], group['final'], it['rk'])
+                    path = calculate_miter_offset_v4(it['pts'], it['rad'], group['t_cnc'], it['rk'])
                     for pi, p in enumerate(path):
                         nx, ny = p[0] + off_x, p[1] + off_y
                         if pi == 0:
@@ -172,7 +159,7 @@ if upl:
                         else:
                             nc.append(f"N{n_c} G01 X{nx:.3f} Y{ny:.3f} F{int(it['f'])}"); n_c += 5
                     nc.append(f"N{n_c} G00 Z36.0"); n_c += 5
-        nc.extend([f"N{n_c} M05", f"N{n_c+5} M30", f"N{n_c+10} M200", "%"])
+        nc.extend([f"N{n_c} M05", f"N{n_c+5} M30", "%"])
         
         with col_vis:
             fig = go.Figure()
@@ -182,14 +169,13 @@ if upl:
             fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=pl+off_x, y1=pw+off_y, line=dict(color="BurlyWood", width=3), fillcolor="rgba(222, 184, 135, 0.05)")
             fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="RoyalBlue", width=1, dash="dot"))
 
-            for b_id in full_order:
+            for b_id in order:
                 group = tool_groups[block_configs[b_id]['key']]
                 for it in group['items']:
                     ox, oy = zip(*it['pts'])
                     color = "blue" if group['final'] else "red"
-                    fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2.5), name=f"חלק: {group['t_cnc']}", showlegend=False))
-                    px, py = zip(*calculate_miter_offset_v2(it['pts'], it['rad'], group['final'], it['rk']))
+                    fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2.5), name=f"גאומטריה: {group['t_cnc']}", showlegend=False))
+                    px, py = zip(*calculate_miter_offset_v4(it['pts'], it['rad'], group['t_cnc'], it['rk']))
                     fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5), name=f"מסלול: {group['t_cnc']}"))
-            
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-            st.download_button(f"📥 הורד NC (גרסה 47.9)", "\n".join(nc), f"{f_file.name}_v479.nc")
+            st.download_button(f"📥 הורד NC (גרסה 48.1)", "\n".join(nc), f"{f_file.name}_v481.nc")
