@@ -4,8 +4,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 48.1 - FINAL INDUSTRIAL VERSION
-st.set_page_config(page_title="Darwish 48.1 Production", layout="wide")
+# Darwish 48.2 - PYTHA COMPLIANCE (STRICT VECTOR ORDER + RK SYNC)
+st.set_page_config(page_title="Darwish 48.2 Production", layout="wide")
 
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
@@ -24,21 +24,15 @@ def get_winding(pts):
         area += (p1[0] * p2[1] - p2[0] * p1[1])
     return area / 2.0
 
-def calculate_miter_offset_v4(pts, r, tool_id, mpr_rk):
+def calculate_miter_offset_v5(pts, r, mpr_rk):
+    """ציות מוחלט לכיוון הווקטור ב-MPR (ללא ניחושי פנים/חוץ)"""
     if r <= 0: return pts
     pts_arr = np.array(pts)
-    is_ccw = get_winding(pts) > 0
     
-    # לוגיקת צידוד תעשייתית:
-    # עבור כלים פנימיים (T4, T11) - כוח לכיוון המרכז (Inside)
-    if tool_id in ['T4', 'T11']:
-        side = 1 if is_ccw else -1
-    # עבור כלי סופי (T2) - כוח החוצה (Outside)
-    elif tool_id == 'T2':
-        side = -1 if is_ccw else 1
-    # עבור כלים אחרים - ציות ל-RK
-    else:
-        side = 1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0
+    # מיפוי צד לפי הגדרת הפייטה
+    if "WRKL" in mpr_rk: side = 1  # שמאל ביחס לכיוון הווקטור
+    elif "WRKR" in mpr_rk: side = -1 # ימין ביחס לכיוון הווקטור
+    else: return pts # WRK0 - מרכז
 
     n_pts = len(pts_arr)
     offset_path = []
@@ -63,14 +57,14 @@ def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1).strip()) if m else default
 
-st.title("🏭 מרכז ייצור דרוויש 48.1")
+st.title("🏭 מרכז ייצור דרוויש 48.2")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
     st.subheader("הגדרות ייצור")
     rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=True)
-    off_x = st.number_input("תוספת הרחקה X (מילימטר)", value=0.0)
-    off_y = st.number_input("תוספת הרחקה Y (מילימטר)", value=0.0)
+    off_x = st.number_input("תוספת הרחקה X", value=0.0)
+    off_y = st.number_input("תוספת הרחקה Y", value=0.0)
     ramp_len = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
     upl = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 
@@ -113,6 +107,7 @@ if upl:
             
             rk_val = re.search(r'RK="([^"]*)"', bc)
             mpr_rk = rk_val.group(1).strip() if rk_val else "WRKL"
+            if tag == '181': mpr_rk = "WRKL" # פוקט תמיד פנימה
 
             ops.append({
                 't_cnc': t_info.iloc[0]['T_CNC'], 'desc': t_info.iloc[0]['תיאור'], 
@@ -139,10 +134,9 @@ if upl:
                     final_depths = [st.number_input(f"עומק פסיעה {di+1}", value=d, key=f"z_{i}_{di}_{f_file.name}") for di, d in enumerate(depths)]
                     block_configs.append({'id': i, 'active': active, 'passes': final_depths, 'final': group['final'], 'key': key})
 
-            order = st.multiselect("סדר כלים:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]} ({block_configs[x]['key'][1]})")
+            order = st.multiselect("סדר כלים:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]}")
 
-        # ייצור NC
-        nc = ["%", f"(N10 DARWISH 48.1 FINAL)", "N20 G90 G54 G21"]
+        nc = ["%", f"(N10 DARWISH 48.2 FINAL)", "N20 G90 G54 G21"]
         n_c = 30
         for b_id in order:
             b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
@@ -150,7 +144,7 @@ if upl:
             n_c += 20
             for zv in b_cfg['passes']:
                 for it in group['items']:
-                    path = calculate_miter_offset_v4(it['pts'], it['rad'], group['t_cnc'], it['rk'])
+                    path = calculate_miter_offset_v5(it['pts'], it['rad'], it['rk'])
                     for pi, p in enumerate(path):
                         nx, ny = p[0] + off_x, p[1] + off_y
                         if pi == 0:
@@ -164,18 +158,16 @@ if upl:
         with col_vis:
             fig = go.Figure()
             fig.update_layout(dragmode='pan', yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
-            
             pl, pw = (wp_w, wp_l) if rotate else (wp_l, wp_w)
             fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=pl+off_x, y1=pw+off_y, line=dict(color="BurlyWood", width=3), fillcolor="rgba(222, 184, 135, 0.05)")
             fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="RoyalBlue", width=1, dash="dot"))
-
             for b_id in order:
                 group = tool_groups[block_configs[b_id]['key']]
                 for it in group['items']:
                     ox, oy = zip(*it['pts'])
                     color = "blue" if group['final'] else "red"
-                    fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2.5), name=f"גאומטריה: {group['t_cnc']}", showlegend=False))
-                    px, py = zip(*calculate_miter_offset_v4(it['pts'], it['rad'], group['t_cnc'], it['rk']))
-                    fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5), name=f"מסלול: {group['t_cnc']}"))
+                    fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2.5), showlegend=False))
+                    px, py = zip(*calculate_miter_offset_v5(it['pts'], it['rad'], it['rk']))
+                    fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5)))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-            st.download_button(f"📥 הורד NC (גרסה 48.1)", "\n".join(nc), f"{f_file.name}_v481.nc")
+            st.download_button(f"📥 הורד NC (גרסה 48.2)", "\n".join(nc), f"{f_file.name}_v482.nc")
