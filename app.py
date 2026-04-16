@@ -4,92 +4,103 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 48.6 - THE INSET PROTOCOL (EYAL'S LOGIC) + FULL UI
-st.set_page_config(page_title="Darwish 48.6 Production", layout="wide")
+# Darwish 48.7 - THE BOUNDARY GUARD (INSET INTERSECTION)
+st.set_page_config(page_title="Darwish 48.7 Production", layout="wide")
 
-# --- 1. שכבת שימור: ניהול כלים (UI RESTORE) ---
+# --- 1. שכבת שימור: ניהול כלים ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
-        {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "End Mill 40mm", "קוטר": 40.0, "RPM": 18000, "Feed": 12000},
-        {"T_CNC": "T2", "MPR_Name": "142", "תיאור": "End Mill 6mm", "קוטר": 6.0, "RPM": 18000, "Feed": 4500},
-        {"T_CNC": "T3", "MPR_Name": "158", "תיאור": "End Mill 8mm", "קוטר": 8.0, "RPM": 18000, "Feed": 4500},
-        {"T_CNC": "T4", "MPR_Name": "128", "תיאור": "End Mill 12mm", "קוטר": 12.0, "RPM": 18000, "Feed": 5000},
-        {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "End Mill 3mm", "קוטר": 3.0, "RPM": 18000, "Feed": 2500},
-        {"T_CNC": "T44", "MPR_Name": "BV5", "תיאור": "Drill 5mm", "קוטר": 5.0, "RPM": 4500, "Feed": 1200}
+        {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "End Mill 40 מילימטר", "קוטר": 40.0, "RPM": 18000, "Feed": 12000},
+        {"T_CNC": "T2", "MPR_Name": "142", "תיאור": "End Mill 6 מילימטר", "קוטר": 6.0, "RPM": 18000, "Feed": 4500},
+        {"T_CNC": "T3", "MPR_Name": "158", "תיאור": "End Mill 8 מילימטר", "קוטר": 8.0, "RPM": 18000, "Feed": 4500},
+        {"T_CNC": "T4", "MPR_Name": "128", "תיאור": "End Mill 12 מילימטר", "קוטר": 12.0, "RPM": 18000, "Feed": 5000},
+        {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "End Mill 3 מילימטר", "קוטר": 3.0, "RPM": 18000, "Feed": 2500},
+        {"T_CNC": "T44", "MPR_Name": "BV5", "תיאור": "Drill 5 מילימטר", "קוטר": 5.0, "RPM": 4500, "Feed": 1200}
     ])
 
-with st.expander("🛠️ ניהול כלים (אבן יסוד)", expanded=True):
-    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_486")
+with st.expander("🛠️ ניהול כלים", expanded=True):
+    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_487")
 
-# --- 2. ליבה מתמטית - Inset vs Offset ---
+# --- 2. ליבה מתמטית v9 - Inset Intersection & Boundary Clipping ---
 
-def get_winding(pts):
-    area = 0
-    for i in range(len(pts)):
-        p1, p2 = pts[i], pts[(i + 1) % len(pts)]
-        area += (p1[0] * p2[1] - p2[0] * p1[1])
-    return area / 2.0
+def is_point_in_poly(x, y, poly):
+    n = len(poly)
+    inside = False
+    p1x, p1y = poly[0]
+    for i in range(n + 1):
+        p2x, p2y = poly[i % n]
+        if y > min(p1y, p2y):
+            if y <= max(p1y, p2y):
+                if x <= max(p1x, p2x):
+                    if p1y != p2y:
+                        xints = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                    if p1x == p2x or x <= xints:
+                        inside = not inside
+        p1x, p1y = p2x, p2y
+    return inside
 
-def calculate_path(pts, r, mpr_rk, is_pocket=False):
-    """
-    מנוע משולב:
-    כרסום רגיל -> אופסט וקטורי (v5).
-    פוקט -> יצירת גאומטריה פנימית מוקטנת (הרעיון של אייל).
-    """
+def calculate_path_v487(pts, r, mpr_rk, is_pocket=False):
     if r <= 0: return pts
     pts_arr = np.array(pts)
-    is_ccw = get_winding(pts) > 0
+    is_ccw = (sum((pts_arr[i][0] * pts_arr[(i+1)%len(pts_arr)][1] - pts_arr[(i+1)%len(pts_arr)][0] * pts_arr[i][1]) for i in range(len(pts_arr))) / 2.0) > 0
     
-    # בחירת צד: פוקט תמיד פנימה, כרסום לפי RK
-    if is_pocket:
-        side = 1 if is_ccw else -1
-    else:
+    # כיוון צידוד: פוקט תמיד פנימה
+    side = 1 if is_ccw else -1
+    if not is_pocket:
         side = 1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0
         if side == 0: return pts
 
-    n_pts = len(pts_arr)
-    offset_path = []
-    normals = []
-    for i in range(n_pts - 1):
-        v = pts_arr[i+1] - pts_arr[i]
+    n = len(pts_arr)
+    # יצירת קווים מקבילים (Offset Lines)
+    shifted_lines = []
+    for i in range(n - 1):
+        p1, p2 = pts_arr[i], pts_arr[i+1]
+        v = p2 - p1
         mag = np.linalg.norm(v)
-        normals.append(side * np.array([-v[1], v[0]]) / mag if mag != 0 else np.array([0,0]))
-    
-    # מגביל אורך לפינות חדות (למניעת שפיצים בכרסום רגיל)
-    miter_limit = r * 1.5 
-    
-    for i in range(n_pts):
-        if i == 0: offset_path.append(pts_arr[0] + normals[0] * r)
-        elif i == n_pts - 1: offset_path.append(pts_arr[-1] + normals[-1] * r)
+        if mag == 0: continue
+        normal = side * np.array([-v[1], v[0]]) / mag
+        shifted_lines.append((p1 + normal * r, p2 + normal * r))
+
+    new_path = []
+    for i in range(len(shifted_lines)):
+        l1 = shifted_lines[i]
+        l2 = shifted_lines[(i + 1) % len(shifted_lines)]
+        
+        # חישוב חיתוך בין שני קווים
+        def intersect(line1, line2):
+            x1, y1 = line1[0]; x2, y2 = line1[1]
+            x3, y3 = line2[0]; x4, y4 = line2[1]
+            denom = (y4-y3)*(x2-x1) - (x4-x3)*(y2-y1)
+            if abs(denom) < 1e-6: return line1[1]
+            ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / denom
+            return np.array([x1 + ua*(x2-x1), y1 + ua*(y2-y1)])
+
+        p_int = intersect(l1, l2)
+        
+        # Boundary Guard: חסימה בתוך הגאומטריה המקורית
+        if is_pocket and not is_point_in_poly(p_int[0], p_int[1], pts):
+            # אם מחוץ למקור, נצמד לנקודת הקצה של הקו המוסט (Bevel)
+            new_path.append(l1[1].tolist())
+            new_path.append(l2[0].tolist())
         else:
-            n1, n2 = normals[i-1], normals[i]
-            miter = n1 + n2
-            m_mag_sq = np.dot(miter, miter)
-            scale = 2.0 / m_mag_sq if m_mag_sq > 1e-6 else 1.0
-            
-            offset_vec = miter * scale * r
-            # קטימה בפינות חדות (Clipping)
-            if np.linalg.norm(offset_vec) > miter_limit:
-                offset_vec = (offset_vec / np.linalg.norm(offset_vec)) * miter_limit
-            offset_path.append(pts_arr[i] + offset_vec)
-    
-    # סגירת מסלול מפורשת
-    if n_pts > 2: offset_path.append(offset_path[0])
-    return [p.tolist() for p in offset_path]
+            new_path.append(p_int.tolist())
+
+    if len(new_path) > 2: new_path.append(new_path[0])
+    return new_path
 
 def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1).strip()) if m else default
 
-# --- 3. ממשק ייצור ---
-st.title("🏭 דרוויש 48.6 - THE INSET PROTOCOL")
+# --- 3. ממשק הפקה ---
+st.title("🏭 דרוויש 48.7 - THE BOUNDARY GUARD")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
     st.subheader("הגדרות פרויקט")
     rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=True)
-    off_x = st.number_input("תוספת הרחקה X", value=0.0)
-    off_y = st.number_input("תוספת הרחקה Y", value=0.0)
+    off_x = st.number_input("תוספת הרחקה X (מילימטר)", value=0.0)
+    off_y = st.number_input("תוספת הרחקה Y (מילימטר)", value=0.0)
     ramp_len = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
     upl = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 
@@ -119,7 +130,7 @@ if upl:
             t_info = st.session_state.tool_db[st.session_state.tool_db['MPR_Name'] == t_mpr.replace("BV","")]
             if t_info.empty: t_info = st.session_state.tool_db[st.session_state.tool_db['T_CNC'] == "T2"]
             
-            # סנכרון עומקים (WoodWOP Z-Sync)
+            # Z-Sync: פוקט (181) וכרסום (130/105)
             if tag in ['181', '102']: z_abs = round((thick - get_f('TI', bc)), 3)
             else: z_abs = round(get_f('ZA', bc), 3)
             
@@ -147,14 +158,14 @@ if upl:
             for i, (key, group) in enumerate(tool_groups.items()):
                 label = "🔴 סופי" if group['final'] else "🔵 פנימי"
                 with st.expander(f"{label}: {group['t_cnc']} ({group['desc']})"):
-                    active = st.checkbox("כלול", value=True, key=f"act_{i}")
+                    active = st.checkbox("כלול בייצור", value=True, key=f"act_{i}")
                     depths = sorted(list(set(it['z'] for it in group['items'])), reverse=True)
                     final_depths = [st.number_input(f"עומק פסיעה {di+1}", value=d, key=f"z_{i}_{di}") for di, d in enumerate(depths)]
                     block_configs.append({'id': i, 'active': active, 'passes': final_depths, 'key': key})
-            order = st.multiselect("סדר כלים:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]}")
+            order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]}")
 
         # ייצור NC
-        nc = ["%", f"(N10 DARWISH 48.6 PRODUCTION)", "N20 G90 G54 G21"]
+        nc = ["%", f"(N10 DARWISH 48.7 BOUNDARY GUARD)", "N20 G90 G54 G21"]
         n_c = 30
         for b_id in order:
             b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
@@ -162,7 +173,7 @@ if upl:
             n_c += 20
             for zv in b_cfg['passes']:
                 for it in group['items']:
-                    path = calculate_path(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                    path = calculate_path_v487(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                     current_ramp = 0 if it['is_pocket'] else ramp_len
                     for pi, p in enumerate(path):
                         nx, ny = p[0] + off_x, p[1] + off_y
@@ -183,8 +194,8 @@ if upl:
                 for it in group['items']:
                     ox, oy = zip(*it['pts'])
                     color = "blue" if it['t_cnc'] == 'T2' else "red"
-                    fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2.5), showlegend=False))
-                    px, py = zip(*calculate_path(it['pts'], it['rad'], it['rk'], it['is_pocket']))
+                    fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2), showlegend=False))
+                    px, py = zip(*calculate_path_v487(it['pts'], it['rad'], it['rk'], it['is_pocket']))
                     fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5)))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-            st.download_button(f"📥 הורד NC (גרסה 48.6)", "\n".join(nc), f"{f_file.name}_v486.nc")
+            st.download_button(f"📥 הורד NC (גרסה 48.7)", "\n".join(nc), f"{f_file.name}_v487.nc")
