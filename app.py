@@ -4,8 +4,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 48.2 - PYTHA COMPLIANCE (STRICT VECTOR ORDER + RK SYNC)
-st.set_page_config(page_title="Darwish 48.2 Production", layout="wide")
+# Darwish 48.3 - THE FINAL TOUCH (POCKET LEAD-IN & DEPTH FIX)
+st.set_page_config(page_title="Darwish 48.3 Production", layout="wide")
 
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
@@ -24,15 +24,18 @@ def get_winding(pts):
         area += (p1[0] * p2[1] - p2[0] * p1[1])
     return area / 2.0
 
-def calculate_miter_offset_v5(pts, r, mpr_rk):
-    """ציות מוחלט לכיוון הווקטור ב-MPR (ללא ניחושי פנים/חוץ)"""
+def calculate_miter_offset_v6(pts, r, mpr_rk, force_inside=False):
     if r <= 0: return pts
     pts_arr = np.array(pts)
+    is_ccw = get_winding(pts) > 0
     
-    # מיפוי צד לפי הגדרת הפייטה
-    if "WRKL" in mpr_rk: side = 1  # שמאל ביחס לכיוון הווקטור
-    elif "WRKR" in mpr_rk: side = -1 # ימין ביחס לכיוון הווקטור
-    else: return pts # WRK0 - מרכז
+    # לוגיקה לפוקטים (181): כוח פנימה לכיוון מרכז המסה
+    if force_inside:
+        side = 1 if is_ccw else -1
+    else:
+        if "WRKL" in mpr_rk: side = 1
+        elif "WRKR" in mpr_rk: side = -1
+        else: return pts
 
     n_pts = len(pts_arr)
     offset_path = []
@@ -41,7 +44,6 @@ def calculate_miter_offset_v5(pts, r, mpr_rk):
         v = pts_arr[i+1] - pts_arr[i]
         mag = np.linalg.norm(v)
         normals.append(side * np.array([-v[1], v[0]]) / mag if mag != 0 else np.array([0,0]))
-    
     for i in range(n_pts):
         if i == 0: offset_path.append(pts_arr[0] + normals[0] * r)
         elif i == n_pts - 1: offset_path.append(pts_arr[-1] + normals[-1] * r)
@@ -57,14 +59,14 @@ def get_f(key, block, default=0.0):
     m = re.search(f'{key}="([^"]*)"', block)
     return float(m.group(1).strip()) if m else default
 
-st.title("🏭 מרכז ייצור דרוויש 48.2")
+st.title("🏭 מרכז ייצור 48.3")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
     st.subheader("הגדרות ייצור")
     rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=True)
-    off_x = st.number_input("תוספת הרחקה X", value=0.0)
-    off_y = st.number_input("תוספת הרחקה Y", value=0.0)
+    off_x = st.number_input("תוספת הרחקה X (מילימטר)", value=0.0)
+    off_y = st.number_input("תוספת הרחקה Y (מילימטר)", value=0.0)
     ramp_len = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
     upl = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 
@@ -95,8 +97,9 @@ if upl:
             t_info = st.session_state.tool_db[st.session_state.tool_db['MPR_Name'] == t_mpr.replace("BV","")]
             if t_info.empty: t_info = st.session_state.tool_db[st.session_state.tool_db['T_CNC'] == "T2"]
             
+            # תיקון עומק (Z-Depth Sync): Z = Thick - TI
             ti_val = get_f('TI', bc) if tag in ['181','102'] else get_f('ZA', bc)
-            z_abs = round((thick - ti_val if tag in ['181','102'] else ti_val), 3)
+            z_abs = round((thick - ti_val), 3)
             geoid = re.search(r'EA="(\d+):', bc).group(1).strip() if re.search(r'EA="(\d+):', bc) else None
             
             if tag == '102':
@@ -107,13 +110,12 @@ if upl:
             
             rk_val = re.search(r'RK="([^"]*)"', bc)
             mpr_rk = rk_val.group(1).strip() if rk_val else "WRKL"
-            if tag == '181': mpr_rk = "WRKL" # פוקט תמיד פנימה
 
             ops.append({
                 't_cnc': t_info.iloc[0]['T_CNC'], 'desc': t_info.iloc[0]['תיאור'], 
                 'z': z_abs, 'pts': raw_pts, 'rad': t_info.iloc[0]['קוטר']/2, 
                 'f': t_info.iloc[0]['Feed'], 's': t_info.iloc[0]['RPM'],
-                'final': (z_abs <= 0.2 and tag != '102'), 'rk': mpr_rk
+                'final': (z_abs <= 0.2 and tag != '102'), 'rk': mpr_rk, 'is_pocket': (tag == '181')
             })
 
         tool_groups = {}
@@ -136,7 +138,8 @@ if upl:
 
             order = st.multiselect("סדר כלים:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]}")
 
-        nc = ["%", f"(N10 DARWISH 48.2 FINAL)", "N20 G90 G54 G21"]
+        # ייצור NC
+        nc = ["%", f"(N10 DARWISH 48.3 FINAL)", "N20 G90 G54 G21"]
         n_c = 30
         for b_id in order:
             b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
@@ -144,11 +147,13 @@ if upl:
             n_c += 20
             for zv in b_cfg['passes']:
                 for it in group['items']:
-                    path = calculate_miter_offset_v5(it['pts'], it['rad'], it['rk'])
+                    path = calculate_miter_offset_v6(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                    # ביטול נחיתה (Ramp) לפוקטים למניעת חריגה מהגבולות
+                    current_ramp = 0 if it['is_pocket'] else ramp_len
                     for pi, p in enumerate(path):
                         nx, ny = p[0] + off_x, p[1] + off_y
                         if pi == 0:
-                            nc.append(f"N{n_c} G00 X{nx-ramp_len:.3f} Y{ny:.3f}"); n_c += 5
+                            nc.append(f"N{n_c} G00 X{nx-current_ramp:.3f} Y{ny:.3f}"); n_c += 5
                             nc.append(f"N{n_c} G01 Z{zv:.3f} X{nx:.3f} F2000"); n_c += 5
                         else:
                             nc.append(f"N{n_c} G01 X{nx:.3f} Y{ny:.3f} F{int(it['f'])}"); n_c += 5
@@ -167,7 +172,7 @@ if upl:
                     ox, oy = zip(*it['pts'])
                     color = "blue" if group['final'] else "red"
                     fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2.5), showlegend=False))
-                    px, py = zip(*calculate_miter_offset_v5(it['pts'], it['rad'], it['rk']))
+                    px, py = zip(*calculate_miter_offset_v6(it['pts'], it['rad'], it['rk'], it['is_pocket']))
                     fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5)))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-            st.download_button(f"📥 הורד NC (גרסה 48.2)", "\n".join(nc), f"{f_file.name}_v482.nc")
+            st.download_button(f"📥 הורד NC (גרסה 48.3)", "\n".join(nc), f"{f_file.name}_v483.nc")
