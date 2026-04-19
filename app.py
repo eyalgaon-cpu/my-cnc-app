@@ -7,7 +7,7 @@ import numpy as np
 # Darwish 48.8 - THE BOUNDARY GUARD (STABILIZED & SCALED)
 st.set_page_config(page_title="Darwish 48.8 Production", layout="wide")
 
-# --- 1. מסד כלים מלא (כולל T11 וכל הכלים של אבי) ---
+# --- 1. מסד כלים מלא (T1-T49) ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
         {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "כרסום 40 מילימטר", "קוטר": 40.0, "RPM": 12000, "Feed": 4000},
@@ -17,7 +17,7 @@ if 'tool_db' not in st.session_state:
         {"T_CNC": "T6", "MPR_Name": "35", "תיאור": "מקדח צירים 35 מילימטר", "קוטר": 35.0, "RPM": 3000, "Feed": 1000},
         {"T_CNC": "T8", "MPR_Name": "19.0", "תיאור": "כרסום 19 מילימטר", "קוטר": 19.0, "RPM": 16000, "Feed": 3000},
         {"T_CNC": "T10", "MPR_Name": "6.0", "תיאור": "כרסום/מקדח 6 מילימטר", "קוטר": 6.0, "RPM": 18000, "Feed": 2000},
-        {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "כרסום 3 מילימטר (T11)", "קוטר": 3.0, "RPM": 18000, "Feed": 2500},
+        {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "End Mill 3 מילימטר (T11)", "קוטר": 3.0, "RPM": 18000, "Feed": 2500},
         {"T_CNC": "T13", "MPR_Name": "130", "תיאור": "גירונג 90/45", "קוטר": 0.2, "RPM": 18000, "Feed": 2000},
         {"T_CNC": "T44", "MPR_Name": "5.0", "תיאור": "מקדח 5 מילימטר", "קוטר": 5.0, "RPM": 4500, "Feed": 1200},
         {"T_CNC": "T47", "MPR_Name": "8.0", "תיאור": "מקדח 8 מילימטר", "קוטר": 8.0, "RPM": 4500, "Feed": 1200},
@@ -28,20 +28,19 @@ with st.sidebar:
     with st.expander("🛠️ ניהול כלים (T1-T49)", expanded=False):
         st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v488")
 
-# --- 2. ליבה מתמטית v48.7 ---
+# --- 2. ליבה מתמטית v48.7 (Intersection & Inset Logic) ---
 def is_point_in_poly(x, y, poly):
     n = len(poly)
     inside = False
     p1x, p1y = poly[0]
     for i in range(n + 1):
         p2x, p2y = poly[i % n]
-        if y > min(p1y, p2y):
-            if y <= max(p1y, p2y):
-                if x <= max(p1x, p2x):
-                    if p1y != p2y:
-                        xints = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                    if p1x == p2x or x <= xints:
-                        inside = not inside
+        if y > min(p1y, p2y) and y <= max(p1y, p2y):
+            if x <= max(p1x, p2x):
+                if p1y != p2y:
+                    xints = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                if p1x == p2x or x <= xints:
+                    inside = not inside
         p1x, p1y = p2x, p2y
     return inside
 
@@ -62,15 +61,14 @@ def calculate_path_v487(pts, r, mpr_rk, is_pocket=False):
         normal = side * np.array([-v[1], v[0]]) / mag
         shifted_lines.append((p1 + normal * r, p2 + normal * r))
     if not shifted_lines: return pts
-    new_path = []
     def intersect(l1, l2):
         x1, y1 = l1[0]; x2, y2 = l1[1]
         x3, y3 = l2[0]; x4, y4 = l2[1]
-        denom = (y4-y3)*(x2-x1) - (x4-x3)*(y2-y1)
-        if abs(denom) < 1e-6: return l1[1]
-        ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / denom
+        den = (y4-y3)*(x2-x1) - (x4-x3)*(y2-y1)
+        if abs(den) < 1e-6: return l1[1]
+        ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / den
         return np.array([x1 + ua*(x2-x1), y1 + ua*(y2-y1)])
-    new_path.append(tuple(shifted_lines[0][0]))
+    new_path = [tuple(shifted_lines[0][0])]
     for i in range(len(shifted_lines)-1):
         new_path.append(tuple(intersect(shifted_lines[i], shifted_lines[i+1])))
     new_path.append(tuple(shifted_lines[-1][1]))
@@ -154,7 +152,7 @@ if upl:
             order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]}")
 
         # ייצור NC
-        nc = ["%", f"(N10 DARWISH 48.8 - Master Restoration)", "N20 G90 G54 G21"]
+        nc = ["%", f"(N10 DARWISH 48.8 - MASTER FIX)", "N20 G90 G54 G21"]
         n_c = 30
         for b_id in order:
             b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
