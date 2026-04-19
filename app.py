@@ -3,13 +3,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import re
 import math
-import numpy as np
 
 # --- חוק יסוד: פרוטוקול דרוויש 2026 ---
-# סטטוס: גרסה 5.7 - הרמטית (צידוד RK, צבעי פרוטוקול והדמיה פרופורציונלית)
+# סטטוס: גרסה 5.8 - הרמטית (תיקון מיפוי כלים מספרי והפרדת סוגי פעולות)
 # שפה: עברית טכנית (שימוש במילים מילימטר וסנטימטר בלבד)
 
-st.set_page_config(page_title="Darwish CNC Pro - V5.7", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro - V5.8", layout="wide")
 
 # הגדרות מכונה (אבי - ELKUM ELP1330DU)
 MACHINE_WIDTH_X = 1300.0  # מילימטר
@@ -30,7 +29,7 @@ if 'tool_df' not in st.session_state:
 with st.sidebar:
     st.header("🛠️ הגדרות ייצור")
     with st.expander("עריכת מסד כלים (T1-T49)", expanded=False):
-        st.session_state.tool_df = st.data_editor(st.session_state.tool_df, num_rows="dynamic", key="tool_editor_v57")
+        st.session_state.tool_df = st.data_editor(st.session_state.tool_df, num_rows="dynamic", key="tool_editor_v58")
 
     st.markdown("---")
     off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=0.0, step=1.0)
@@ -41,7 +40,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-# --- 2. מנועי ליבה (מתמטיקה וצידוד) ---
+# --- 2. מנועי ליבה (מתמטיקה) ---
 def _safe_float(val):
     try:
         clean = re.sub(r'[^0-9.\-]', '', str(val))
@@ -51,24 +50,17 @@ def _safe_float(val):
 def rotate_90_ccw(x, y, board_w, board_l):
     return (board_w - y), x
 
-def apply_rk_offset(x, y, rk, radius, prev_x=None):
-    """חישוב אופסט וקטורי לפי RK: 0=Center, 1=Left, 2=Right"""
-    if rk == 0 or prev_x is None: return x, y
-    
-    dx = x - prev_x[0]
-    dy = y - prev_x[1]
+def apply_rk_offset(x, y, rk, radius, prev_pos=None):
+    if rk == 0 or prev_pos is None: return x, y
+    dx = x - prev_pos[0]
+    dy = y - prev_pos[1]
     dist = math.sqrt(dx**2 + dy**2)
     if dist == 0: return x, y
-    
-    # נורמל לוקטור התנועה
-    nx = -dy / dist
-    ny = dx / dist
-    
-    # כיוון הצידוד
-    side = -1.0 if rk == 1 else 1.0 # 1=Left (CCW normal), 2=Right
+    nx, ny = -dy / dist, dx / dist
+    side = -1.0 if rk == 1 else 1.0 # 1=Left, 2=Right
     return x + (nx * radius * side), y + (ny * radius * side)
 
-# --- 3. Block-Based Parser (גמישות מירבית) ---
+# --- 3. Block-Parser מורחב ---
 class BlockMPRParser:
     def __init__(self, content):
         self.raw_content = content
@@ -84,7 +76,6 @@ class BlockMPRParser:
         blocks = re.split(r'(?=<[0-9]{3}|\])', self.raw_content)
         for block in blocks:
             params = dict(re.findall(r'(\w+)="?([^"\s]+)"?', block))
-            
             if block.startswith("<102"): # קידוחים
                 num = int(_safe_float(params.get('AN', 1)))
                 dist = _safe_float(params.get('AB', 0))
@@ -93,47 +84,54 @@ class BlockMPRParser:
                     rx = _safe_float(params.get('XA', 0)) + (i * dist * math.cos(ang))
                     ry = _safe_float(params.get('YA', 0)) + (i * dist * math.sin(ang))
                     self.ops.append({'type': 'Drill', 'raw_x': rx, 'raw_y': ry, 'raw_z': _safe_float(params.get('TI', 0)), 'z_type': 'TI', 'mpr_id': params.get('DU', '5.0'), 'rk': 0})
-
             if block.startswith("<105") or block.startswith("]2"): # כרסומים
                 self.ops.append({'type': 'Milling', 'raw_x': _safe_float(params.get('XA', params.get('X', 0))), 'raw_y': _safe_float(params.get('YA', params.get('Y', 0))), 'raw_z': _safe_float(params.get('ZA', params.get('Z', 0))), 'z_type': 'ZA', 'mpr_id': params.get('TNO', '142'), 'rk': int(_safe_float(params.get('RK', 0)))})
 
-# --- 4. עיבוד ייצור (Production Logic) ---
+# --- 4. עיבוד ייצור ---
 def process_production(parser, tool_df, ox, oy, global_z):
     processed = []
     prev_pos = None
     
+    # המרת עמודת ID_MPR למספרים לצורך השוואה מדויקת
+    temp_df = tool_df.copy()
+    temp_df['ID_NUM'] = temp_df['ID_MPR'].apply(_safe_float)
+
     for op in parser.ops:
-        # 1. שליפת נתוני כלי
-        t_info = tool_df[tool_df['ID_MPR'] == op['mpr_id']]
-        if t_info.empty: t_info = tool_df[tool_df['NC_Tool'] == "T2"]
-        t_row = t_info.iloc[0]
+        # זיהוי כלי מספרי (Float Match)
+        mpr_id_num = _safe_float(op['mpr_id'])
+        t_info = temp_df[temp_df['ID_NUM'] == mpr_id_num]
         
-        # 2. החלת צידוד RK (לפני סיבוב)
+        if t_info.empty:
+            t_row = tool_df[tool_df['NC_Tool'] == "T2"].iloc[0]
+        else:
+            t_row = t_info.iloc[0]
+        
+        # החלת צידוד
         rx_off, ry_off = apply_rk_offset(op['raw_x'], op['raw_y'], op['rk'], t_row['Diameter']/2, prev_pos)
-        
-        # 3. סיבוב 90 מעלות CCW והזזה
         nx, ny = rotate_90_ccw(rx_off, ry_off, parser.header['W'], parser.header['L'])
         
+        # חישוב עומק Z
         fz = (parser.header['T'] - op['raw_z']) if op['z_type'] == 'TI' else op['raw_z']
         final_z = round(fz + global_z, 3)
         
+        # לוגיקת פסיעות - רק לכרסום T2 שמנקה את השולחן
         z_steps = [final_z]
-        if final_z < 0.1: # Scoring Pass
+        if op['type'] == 'Milling' and t_row['NC_Tool'] == "T2" and final_z < 0.1:
             z_steps = [round(parser.header['T'] - 2.0, 3), final_z]
 
         processed.append({
             'x': nx + ox, 'y': ny + oy, 'z': z_steps,
             'tool': t_row['NC_Tool'], 'diam': t_row['Diameter'],
             'rpm': t_row['RPM'], 'feed': t_row['Feed'],
-            'desc': t_row['Desc'], 'type': op['type'],
-            'order': 99 if t_row['NC_Tool'] == "T2" else 1
+            'desc': t_row['Desc'], 'type': op['type']
         })
         prev_pos = (op['raw_x'], op['raw_y'])
     
-    return sorted(processed, key=lambda x: x['order'])
+    # מיון: קודם מקדחים, T2 תמיד אחרון
+    return sorted(processed, key=lambda x: 99 if x['tool'] == "T2" else 1)
 
-# --- 5. ממשק משתמש (UI/UX) ---
-st.title("🚀 Darwish CNC Pro - V5.7 (RK Master)")
+# --- 5. ממשק משתמש ---
+st.title("🚀 Darwish CNC Pro - V5.8 (Tool-Mapping Fix)")
 
 uploaded = st.file_uploader("טען קובץ MPR", type=['mpr', 'txt'])
 
@@ -145,26 +143,23 @@ if uploaded:
         st.success(f"לוח נקלט: {parser.header['L']}x{parser.header['W']} מילימטר")
 
         fig = go.Figure()
-        # שולחן ופלטה (צבע חום לפי הפרוטוקול)
         fig.add_shape(type="rect", x0=0, y0=0, x1=MACHINE_WIDTH_X, y1=MACHINE_LENGTH_Y, fillcolor="gray", opacity=0.05)
-        fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=off_x+parser.header['W'], y1=off_y+parser.header['L'], line_color="brown", fillcolor="brown", opacity=0.15)
+        fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=off_x+parser.header['W'], y1=offset_y+parser.header['L'] if 'offset_y' in locals() else off_y+parser.header['L'], line_color="brown", fillcolor="brown", opacity=0.15)
         
         for idx, b in enumerate(final_list):
             color = "blue" if b['type'] == 'Drill' else "red"
-            r_mm = b['diam'] / 2
-            
             fig.add_trace(go.Scatter(
                 x=[b['x']], y=[b['y']], mode='markers',
                 marker=dict(size=b['diam'], sizemode='diameter', color=color, opacity=0.7),
                 name=f"פעולה {idx+1}",
-                hovertemplate=f"<b>{b['desc']} ({b['tool']})</b><br>קוטר: {b['diam']} מילימטר<br>עומק Z סופי: {b['z'][-1]}<br>פסיעות: {len(b['z'])}<extra></extra>"
+                hovertemplate=f"<b>{b['type']}: {b['desc']} ({b['tool']})</b><br>קוטר: {b['diam']} מילימטר<br>עומק Z: {b['z'][-1]}<br>פסיעות: {len(b['z'])}<extra></extra>"
             ))
 
-        fig.update_layout(title="הדמיית ייצור (צבעי פרוטוקול 1:1)", xaxis=dict(range=[-50, 1400]), yaxis=dict(range=[-50, 3100]), width=600, height=800, dragmode='pan', yaxis_scaleanchor="x", showlegend=False)
+        fig.update_layout(title="הדמיית ייצור (גודל קדח 1:1)", xaxis=dict(range=[-50, 1400]), yaxis=dict(range=[-50, 3100]), width=600, height=800, dragmode='pan', yaxis_scaleanchor="x", showlegend=False)
         st.plotly_chart(fig, config={'scrollZoom': True})
 
         if st.button("🛠️ הפק קוד NC"):
-            nc = ["%", f"(DARWISH V5.7 - RK ACTIVE)", "N10 G90 G54 G21 G17"]
+            nc = ["%", "(DARWISH V5.8 - NUMERIC MAPPING)", "N10 G90 G54 G21 G17"]
             curr_t, l = None, 20
             for b in final_list:
                 if b['tool'] != curr_t:
