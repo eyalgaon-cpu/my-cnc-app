@@ -4,11 +4,11 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 49.2 - THE MASTER RESTORATION
+# Darwish 49.3 - THE VISUAL UPGRADE
 # חוק יסוד: איסור מוחלט על צמצום קוד או שינוי ממשק ללא אישור אייל.
-st.set_page_config(page_title="Darwish 49.2 Production", layout="wide")
+st.set_page_config(page_title="Darwish 49.3 Production", layout="wide")
 
-# --- 1. שכבת שימור: ניהול כלים (Industrial DB - Full) ---
+# --- 1. מסד כלים (Industrial DB - Locked 49.2) ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
         {"T_CNC": "T1", "MP_Name": "137", "תיאור": "כרסום 40 מילימטר", "קוטר": 40.0, "RPM": 12000, "Feed": 4000},
@@ -24,16 +24,20 @@ if 'tool_db' not in st.session_state:
         {"T_CNC": "T49", "MPR_Name": "15.0", "תיאור": "מקדח 15 מילימטר", "קוטר": 15.0, "RPM": 3000, "Feed": 800}
     ])
 
-with st.expander("🛠️ ניהול כלים (T1-T49)", expanded=False):
-    st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v492")
+with st.sidebar:
+    st.header("🛠️ ניהול ייצור")
+    with st.expander("מסד כלים", expanded=False):
+        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v493")
+    off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=0.0)
+    off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
+    gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
 
-# --- 2. ליבה מתמטית v48.7 (Intersection Logic) ---
+# --- 2. ליבה מתמטית v48.7 (Intersection & Numeric) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
 
 def find_tool_numeric(mpr_id, df):
-    """שחזור זיהוי נומרי מגרסה 6.1 למניעת כפיית T2"""
     try:
         target = round(_safe_float(mpr_id), 1)
         for _, row in df.iterrows():
@@ -41,67 +45,51 @@ def find_tool_numeric(mpr_id, df):
     except: pass
     return df[df['T_CNC'] == "T2"].iloc[0]
 
-def is_point_in_poly(x, y, poly):
-    n = len(poly); inside = False
-    p1x, p1y = poly[0]
-    for i in range(n + 1):
-        p2x, p2y = poly[i % n]
-        if y > min(p1y, p2y) and y <= max(p1y, p2y):
-            if x <= max(p1x, p2x):
-                if p1y != p2y:
-                    xints = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                if p1x == p2x or x <= xints: inside = not inside
-        p1x, p1y = p2x, p2y
-    return inside
-
-def calculate_path_v492(pts, r, mpr_rk, is_pocket=False):
+def calculate_path_v493(pts, r, mpr_rk, is_pocket=False):
     if r <= 0 or len(pts) < 2: return pts
     pts_arr = np.array(pts); n = len(pts_arr)
-    is_ccw = (sum((pts_arr[i][0] * pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0] * pts_arr[i][1]) for i in range(n)) / 2.0) > 0
+    is_ccw = (sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0) > 0
     side = 1 if is_ccw else -1
     if not is_pocket:
         side = 1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0
         if side == 0: return pts
     shifted = []
-    for i in range(n - 1):
-        p1, p2 = pts_arr[i], pts_arr[i+1]; v = p2 - p1; mag = np.linalg.norm(v)
+    for i in range(n-1):
+        p1, p2 = pts_arr[i], pts_arr[i+1]; v = p2-p1; mag = np.linalg.norm(v)
         if mag == 0: continue
         normal = side * np.array([-v[1], v[0]]) / mag
-        shifted.append((p1 + normal * r, p2 + normal * r))
+        shifted.append((p1 + normal*r, p2 + normal*r))
     if not shifted: return pts
     def intersect(l1, l2):
-        x1, y1 = l1[0]; x2, y2 = l1[1]; x3, y3 = l2[0]; x4, y4 = l2[1]
-        den = (y4-y3)*(x2-x1) - (x4-x3)*(y2-y1)
-        if abs(den) < 1e-6: return l1[1]
-        ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / den
-        return np.array([x1 + ua*(x2-x1), y1 + ua*(y2-y1)])
+        x1,y1=l1[0]; x2,y2=l1[1]; x3,y3=l2[0]; x4,y4=l2[1]
+        den = (y4-y3)*(x2-x1)-(x4-x3)*(y2-y1)
+        if abs(den)<1e-6: return l1[1]
+        ua = ((x4-x3)*(y1-y3)-(y4-y3)*(x1-x3))/den
+        return np.array([x1+ua*(x2-x1), y1+ua*(y2-y1)])
     new_path = [tuple(shifted[0][0])]
     for i in range(len(shifted)-1): new_path.append(tuple(intersect(shifted[i], shifted[i+1])))
     new_path.append(tuple(shifted[-1][1]))
-    if len(new_path) > 2 and is_pocket: new_path.append(new_path[0])
     return new_path
 
 def get_f(key, block, default=0.0):
     m = re.search(f'{key}="?([^"\\s]+)"?', block)
     return _safe_float(m.group(1)) if m else default
 
-# --- 3. ממשק הפקה ---
-st.title("🏭 דרוויש 49.2 - THE MASTER RESTORATION")
+# --- 3. ממשק הפקה והדמיה ---
+st.title("🏭 דרוויש 49.3 - THE VISUAL UPGRADE")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
     st.subheader("הגדרות פרויקט")
     rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=True)
-    off_x = st.number_input("תוספת הרחקה X (מילימטר)", value=0.0)
-    off_y = st.number_input("תוספת הרחקה Y (מילימטר)", value=0.0)
-    gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
     ramp_len = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
     upl = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 
 if upl:
     for f_file in upl:
         mpr = f_file.getvalue().decode('utf-8', errors='ignore')
-        wp_block = re.search(r'\[001(.*?)\]', mpr, re.DOTALL).group(1) if re.search(r'\[001(.*?)\]', mpr, re.DOTALL) else ""
+        wp_match = re.search(r'\[001(.*?)\]', mpr, re.DOTALL)
+        wp_block = wp_match.group(1) if wp_match else ""
         wp_l, wp_w = get_f('l', wp_block, 1000.0), get_f('w', wp_block, 500.0)
         thick = get_f('t', mpr, 19.0)
 
@@ -124,7 +112,7 @@ if upl:
             z_abs = round((thick - get_f('TI', bc)), 3) if tag in ['181', '102'] else round(get_f('ZA', bc), 3)
             geoid = re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else None
             raw_pts = geos.get(geoid, [[get_f('XA', bc), get_f('YA', bc)]]) if tag != '102' else [[wp_w - get_f('YA', bc), get_f('XA', bc)] if rotate else [get_f('XA', bc), get_f('YA', bc)]]
-            ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'pts': raw_pts, 'rad': t_info['קוטר']/2, 'f': t_info['Feed'], 's': t_info['RPM'], 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL", 'is_pocket': (tag == '181'), 'final': (z_abs <= 0.2 and tag != '102'), 'type': tag})
+            ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'pts': raw_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL", 'is_pocket': (tag == '181'), 'final': (z_abs <= 0.2 and tag != '102'), 'type': tag})
 
         tool_groups = {}
         for op in ops:
@@ -146,7 +134,7 @@ if upl:
             order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['key'][0]}")
 
         # ייצור NC
-        nc = ["%", f"(DARWISH 49.2 - MASTER RESTORED)", "N10 G90 G54 G21 G17"]
+        nc = ["%", f"(DARWISH 49.3 - {f_file.name})", "N10 G90 G54 G21 G17"]
         n_c = 20
         for b_id in order:
             b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
@@ -158,7 +146,7 @@ if upl:
                         nc.append(f"N{n_c} G00 X{it['pts'][0][0]+off_x:.3f} Y{it['pts'][0][1]+off_y:.3f}")
                         nc.append(f"N{n_c+5} G01 Z{zv + gz:.3f} F{int(it['f'])}"); n_c += 10
                     else:
-                        path = calculate_path_v492(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                        path = calculate_path_v493(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                         ramp = 0 if it['is_pocket'] else ramp_len
                         for pi, p in enumerate(path):
                             nx, ny = p[0] + off_x, p[1] + off_y
@@ -172,15 +160,30 @@ if upl:
         with col_vis:
             fig = go.Figure()
             fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
+            # 1. שולחן המכונה
+            fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="Gray", width=2), fillcolor="rgba(128, 128, 128, 0.1)")
+            # 2. הפלטה
             fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=wp_w+off_x, y1=wp_l+off_y, line=dict(color="Sienna", width=3), fillcolor="rgba(139, 69, 19, 0.4)")
+            
             for b_id in order:
-                group = tool_groups[block_configs[b_id]['key']]
+                b_cfg = block_configs[b_id]; group = tool_groups[b_cfg['key']]
                 for it in group['items']:
                     ox, oy = zip(*it['pts']); color = "green" if it['type'] == '102' else ("red" if group['final'] else "blue")
-                    if it['type'] == '102': fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', marker=dict(size=12, color=color), showlegend=False))
+                    
+                    # בניית טקסט ריחוף
+                    p_steps = "<br>".join([f"פסיעה {idx+1}: {z_val} מילימטר" for idx, z_val in enumerate(b_cfg['passes'])])
+                    h_text = f"<b>{group['t_cnc']}</b>: {group['desc']}<br>{p_steps}"
+                    
+                    if it['type'] == '102':
+                        fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', 
+                                                 marker=dict(size=it['diam'], sizemode='diameter', color=color), 
+                                                 hoverinfo="text", text=h_text, showlegend=False))
                     else:
-                        fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2), showlegend=False))
-                        px, py = zip(*calculate_path_v492(it['pts'], it['rad'], it['rk'], it['is_pocket']))
-                        fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5), showlegend=False))
+                        fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', 
+                                                 line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
+                        px, py = zip(*calculate_path_v493(it['pts'], it['rad'], it['rk'], it['is_pocket']))
+                        fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', 
+                                                 line=dict(color="yellow", dash="dash", width=1.5), 
+                                                 hoverinfo="text", text=h_text, showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-        st.download_button(f"📥 הורד NC (גרסה 49.2)", "\n".join(nc), f"{f_file.name}.nc")
+        st.download_button(f"📥 הורד NC (גרסה 49.3)", "\n".join(nc), f"{f_file.name}.nc")
