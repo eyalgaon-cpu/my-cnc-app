@@ -4,11 +4,11 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 49.6 - THE CLEAN-CUT ENGINE
+# Darwish 49.7 - THE POCKET SAFETY ENGINE
 # חוק יסוד: איסור מוחלט על צמצום קוד או שינוי ממשק ללא אישור אייל.
-st.set_page_config(page_title="Darwish 49.6 Production", layout="wide")
+st.set_page_config(page_title="Darwish 49.7 Production", layout="wide")
 
-# --- 1. מסד כלים (Industrial DB - Locked) ---
+# --- 1. מסד כלים (Industrial DB) ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
         {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "כרסום 40 מילימטר", "קוטר": 40.0, "RPM": 12000, "Feed": 4000},
@@ -27,12 +27,12 @@ if 'tool_db' not in st.session_state:
 with st.sidebar:
     st.header("🛠️ ניהול ייצור")
     with st.expander("מסד כלים", expanded=False):
-        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v496")
+        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v497")
     off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=0.0)
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
     gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
 
-# --- 2. ליבה מתמטית v48.7 (Intersection & Logic) ---
+# --- 2. ליבה מתמטית v49.7 (Geometry Safety) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
@@ -45,29 +45,39 @@ def find_tool_numeric(mpr_id, df):
     except: pass
     return df[df['T_CNC'] == "T2"].iloc[0]
 
-def calculate_path_v496(pts, r, mpr_rk, is_pocket=False):
+def calculate_path_v497(pts, r, mpr_rk, is_pocket=False):
     if r <= 0 or len(pts) < 2: return pts
     pts_arr = np.array(pts); n = len(pts_arr)
-    is_ccw = (sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0) > 0
-    side = 1 if is_ccw else -1
-    if not is_pocket:
+    # חישוב כיוון המסלול (Winding Order)
+    area = sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0
+    is_ccw = area > 0
+    
+    # חוק יסוד: פוקט תמיד מבצע היסט פנימה
+    if is_pocket:
+        side = 1 if is_ccw else -1
+    else:
         side = 1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0
         if side == 0: return pts
+    
     shifted = []
     for i in range(n-1):
         p1, p2 = pts_arr[i], pts_arr[i+1]; v = p2-p1; mag = np.linalg.norm(v)
         if mag == 0: continue
         normal = side * np.array([-v[1], v[0]]) / mag
         shifted.append((p1 + normal*r, p2 + normal*r))
+    
     if not shifted: return pts
+    
     def intersect(l1, l2):
         x1,y1=l1[0]; x2,y2=l1[1]; x3,y3=l2[0]; x4,y4=l2[1]
         den = (y4-y3)*(x2-x1)-(x4-x3)*(y2-y1)
         if abs(den)<1e-6: return l1[1]
         ua = ((x4-x3)*(y1-y3)-(y4-y3)*(x1-x3))/den
         return np.array([x1+ua*(x2-x1), y1+ua*(y2-y1)])
+    
     new_path = [tuple(shifted[0][0])]
-    for i in range(len(shifted)-1): new_path.append(tuple(intersect(shifted[i], shifted[i+1])))
+    for i in range(len(shifted)-1):
+        new_path.append(tuple(intersect(shifted[i], shifted[i+1])))
     new_path.append(tuple(shifted[-1][1]))
     return new_path
 
@@ -76,13 +86,13 @@ def get_f(key, block, default=0.0):
     return _safe_float(m.group(1)) if m else default
 
 # --- 3. ממשק הפקה והדמיה ---
-st.title("🏭 דרוויש 49.6 - THE CLEAN-CUT ENGINE")
+st.title("🏭 דרוויש 49.7 - THE POCKET SAFETY ENGINE")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
     st.subheader("הגדרות פרויקט")
     rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=True)
-    ramp_len = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
+    ramp_len_global = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
     upl = st.file_uploader("טען קבצי MPR", accept_multiple_files=True)
 
 if upl:
@@ -110,26 +120,30 @@ if upl:
             t_mpr = re.search(r'(?:TNO|T_|DU)="?([^"\\s]+)"?', bc).group(1).strip() if re.search(r'(?:TNO|T_|DU)="?([^"\\s]+)"?', bc) else "142"
             t_info = find_tool_numeric(t_mpr, st.session_state.tool_db)
             
+            # תיקון עומקים: 102 ו-181 עובדים עם TI (חדירה)
+            if tag in ['102', '181']:
+                z_abs = round((thick - get_f('TI', bc)), 3)
+            else:
+                z_abs = round(get_f('ZA', bc), 3)
+
             if tag == '102':
                 xa, ya = get_f('XA', bc), get_f('YA', bc)
                 count = int(get_f('AN', bc, 1)); dist = get_f('AB', bc, 0.0)
                 xr, yr = get_f('XR', bc, 1.0), get_f('YR', bc, 0.0)
-                z_abs = round((thick - get_f('TI', bc)), 3)
                 for i in range(count):
                     curr_xa, curr_ya = xa + (i*dist*xr), ya + (i*dist*yr)
                     f_pts = [[wp_w - curr_ya, curr_xa]] if rotate else [[curr_xa, curr_ya]]
                     ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': f"DR_{tag}_{round(curr_xa,2)}_{round(curr_ya,2)}", 'rk': "WRKL", 'is_pocket': False})
             else:
-                z_abs = round(get_f('ZA', bc), 3)
                 geoid = re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE"
                 raw_pts = geos.get(geoid, [[get_f('XA', bc), get_f('YA', bc)]])
                 ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'pts': raw_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': geoid, 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL", 'is_pocket': (tag == '181')})
 
-        # --- היררכיית קיבוץ (Tool + Rounded Z) ---
+        # --- היררכיית קיבוץ ---
         geo_paths = {}
         for op in ops:
             key = (op['t_cnc'], op['ea'], op['type'] == '102')
-            if key not in geo_paths: geo_paths[key] = {'t_cnc': op['t_cnc'], 'desc': op['desc'], 'is_dr': op['type'] == '102', 'ea': op['ea'], 'ops': [], 's': op['s'], 'f': op['f']}
+            if key not in geo_paths: geo_paths[key] = {'t_cnc': op['t_cnc'], 'desc': op['desc'], 'is_dr': op['type'] == '102', 'ea': op['ea'], 'ops': [], 's': op['s'], 'f': op['f'], 'diam': op['diam']}
             geo_paths[key]['ops'].append(op)
 
         visual_blocks = {}
@@ -137,7 +151,7 @@ if upl:
             z_list = tuple(sorted(list(set(round(o['z'], 3) for o in group['ops'])), reverse=True))
             v_key = (group['t_cnc'], group['is_dr'], z_list)
             if v_key not in visual_blocks:
-                visual_blocks[v_key] = {'t_cnc': group['t_cnc'], 'desc': group['desc'], 'is_dr': group['is_dr'], 'passes': z_list, 'paths': [], 's': group['s'], 'f': group['f']}
+                visual_blocks[v_key] = {'t_cnc': group['t_cnc'], 'desc': group['desc'], 'is_dr': group['is_dr'], 'passes': z_list, 'paths': [], 's': group['s'], 'f': group['f'], 'diam': group['diam']}
             visual_blocks[v_key]['paths'].append(group)
 
         with col_cfg:
@@ -152,8 +166,8 @@ if upl:
                     block_configs.append({'id': i, 'active': active, 'passes': final_depths, 'v_block': v_block})
             order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['v_block']['t_cnc']}")
 
-        # ייצור NC (מניעת יתירות)
-        nc = ["%", f"(DARWISH 49.6 - CLEAN-CUT)", "N10 G90 G54 G21 G17"]
+        # ייצור NC
+        nc = ["%", f"(DARWISH 49.7 - THE POCKET SAFETY ENGINE)", "N10 G90 G54 G21 G17"]
         n_c = 20
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
@@ -164,7 +178,6 @@ if upl:
             for path_group in v_block['paths']:
                 for zv in b_cfg['passes']:
                     for it in path_group['ops']:
-                        # יצירת חתימה ייחודית למניעת כפילות
                         sig = (it['t_cnc'], it['ea'], it['type'], zv)
                         if sig in written_ops: continue
                         written_ops.add(sig)
@@ -173,8 +186,13 @@ if upl:
                             nc.append(f"N{n_c} G00 X{it['pts'][0][0]+off_x:.3f} Y{it['pts'][0][1]+off_y:.3f}")
                             nc.append(f"N{n_c+5} G01 Z{zv + gz:.3f} F{int(it['f'])}"); n_c += 10
                         else:
-                            path = calculate_path_v496(it['pts'], it['rad'], it['rk'], it['is_pocket'])
-                            ramp = 0 if it['is_pocket'] else ramp_len
+                            # לוגיקה לפינות צפופות
+                            p_arr = np.array(it['pts'])
+                            p_width = np.linalg.norm(np.max(p_arr, axis=0) - np.min(p_arr, axis=0))
+                            use_plunge = it['is_pocket'] and (p_width < (2 * it['diam']))
+                            ramp = 0 if (it['is_pocket'] or use_plunge) else ramp_len_global
+                            
+                            path = calculate_path_v497(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                             for pi, p in enumerate(path):
                                 nx, ny = p[0] + off_x, p[1] + off_y
                                 if pi == 0:
@@ -201,7 +219,7 @@ if upl:
                             fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', marker=dict(size=it['diam'], sizemode='diameter', color=color), hoverinfo="text", text=h_text, showlegend=False))
                         else:
                             fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
-                            px, py = zip(*calculate_path_v496(it['pts'], it['rad'], it['rk'], it['is_pocket']))
+                            px, py = zip(*calculate_path_v497(it['pts'], it['rad'], it['rk'], it['is_pocket']))
                             fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5), hoverinfo="text", text=h_text, showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-        st.download_button(f"📥 הורד NC (גרסה 49.6)", "\n".join(nc), f"{f_file.name}.nc")
+        st.download_button(f"📥 הורד NC (גרסה 49.7)", "\n".join(nc), f"{f_file.name}.nc")
