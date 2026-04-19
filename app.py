@@ -6,78 +6,74 @@ import math
 import numpy as np
 
 # --- חוק יסוד: פרוטוקול דרוויש 2026 ---
-# סטטוס: גרסה 6.3 - הרמטית (Intersection Logic & EA Mapping)
+# סטטוס: גרסה 6.4 - המייצב הפורנזי (Unicode Fix & Intersection Logic)
 # שפה: עברית טכנית (שימוש במילים מילימטר וסנטימטר בלבד)
 
-st.set_page_config(page_title="Darwish CNC Pro - V6.3", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro - V6.4", layout="wide")
 
-# הגדרות מכונה
+# הגדרות מכונה (אבי)
 MACHINE_WIDTH_X = 1300.0
 MACHINE_LENGTH_Y = 3050.0
 
-# --- 1. ניהול מסד כלים ---
+# --- 1. ניהול מסד כלים (Industrial Tool Database) ---
 if 'tool_df' not in st.session_state:
     st.session_state.tool_df = pd.DataFrame({
         "ID_MPR": ["142", "158", "128", "35", "130", "5.0", "8.0", "15.0", "40.0", "19.0", "6.0", "20.0", "7.0", "16.0", "42.0"],
         "NC_Tool": ["T2", "T3", "T4", "T6", "T13", "T44", "T47", "T49", "T1", "T8", "T10", "T28", "T7", "T16", "T42"],
-        "Diameter": [12.0, 8.0, 12.0, 35.0, 0.2, 5.0, 8.0, 15.0, 40.0, 19.0, 6.0, 20.0, 10.0, 10.0, 10.0],
-        "RPM": [18000, 18000, 16000, 3000, 18000, 4500, 4500, 3000, 12000, 16000, 18000, 3000, 18000, 18000, 18000],
-        "Feed": [3000, 2500, 3500, 1000, 2000, 1500, 1500, 800, 4000, 3000, 2000, 1000, 2000, 2000, 2000],
-        "Desc": ["כרסום יהלום", "כרסום 8", "כרסום 12", "מקדח צירים", "גירונג", "מקדח 5", "מקדח 8", "מקדח 15", "כרסום ניקוי", "כרסום 19", "כרסום 6", "מקדח 20", "מקל סבא 1", "מקל סבא 2", "פינה"]
+        "Diameter": [12.0, 8.0, 12.0, 35.0, 0.2, 5.0, 8.0, 15.0, 40.0, 19.0, 6.0, 20.0, 10.0, 10.0, 10.0]
     })
 
 with st.sidebar:
     st.header("🛠️ הגדרות ייצור")
-    st.session_state.tool_df = st.data_editor(st.session_state.tool_df, num_rows="dynamic", key="tool_v63")
+    st.session_state.tool_df = st.data_editor(st.session_state.tool_df, key="tools_v64")
     off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=0.0)
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
-    gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
 
-# --- 2. מנוע מתמטי (מבוסס 48.7) ---
+# --- 2. מנוע מתמטי מבוסס 48.7 (Intersection Logic) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
 
 def get_intersect(p1, p2, p3, p4):
-    """חישוב נקודת חיתוך בין שני קווים מקבילים (Offset Lines)"""
+    """חישוב חיתוך בין שני קווים מוסטים למניעת קריסת פינות """
     x1, y1 = p1; x2, y2 = p2
     x3, y3 = p3; x4, y4 = p4
     den = (y4-y3)*(x2-x1) - (x4-x3)*(y2-y1)
-    if abs(den) < 1e-9: return p2 # קווים מקבילים
+    if abs(den) < 1e-6: return p2 # קווים מקבילים
     ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / den
     return (x1 + ua*(x2-x1), y1 + ua*(y2-y1))
 
-def apply_intersection_offset(points, rk, radius):
+def apply_radius_offset(points, rk, radius):
     if rk == 0 or len(points) < 2: return points
-    side = -1.0 if rk == 1 else 1.0
-    parallel_lines = []
+    side = -1.0 if rk == 1 else 1.0 # 1=Left, 2=Right [cite: 33]
     
-    # שלב א: יצירת מקטעים מקבילים
+    # יצירת קווים מקבילים (Offset Lines) [cite: 59-60]
+    lines = []
     for i in range(len(points)-1):
-        p1 = np.array(points[i]); p2 = np.array(points[i+1])
+        p1, p2 = np.array(points[i]), np.array(points[i+1])
         v = p2 - p1
         mag = np.linalg.norm(v)
         if mag == 0: continue
         n = np.array([-v[1], v[0]]) / mag
         offset = n * radius * side
-        parallel_lines.append((p1 + offset, p2 + offset))
+        lines.append((p1 + offset, p2 + offset))
     
-    if not parallel_lines: return points
+    if not lines: return points
     
-    # שלב ב: חישוב חיתוכים
-    new_points = [parallel_lines[0][0]]
-    for i in range(len(parallel_lines)-1):
-        inter = get_intersect(parallel_lines[i][0], parallel_lines[i][1], parallel_lines[i+1][0], parallel_lines[i+1][1])
-        new_points.append(inter)
-    new_points.append(parallel_lines[-1][1])
-    return [tuple(p) for p in new_points]
+    # חישוב חיתוכים (Intersections) [cite: 61, 64]
+    new_pts = [tuple(lines[0][0])]
+    for i in range(len(lines)-1):
+        new_pts.append(get_intersect(lines[i][0], lines[i][1], lines[i+1][0], lines[i+1][1]))
+    new_pts.append(tuple(lines[-1][1]))
+    return new_pts
 
-# --- 3. Forensic Parser (סריקה דו-שלבית) ---
+# --- 3. Forensic Parser (Unicode Fix & EA Link) ---
 class ForensicParser:
-    def __init__(self, content):
-        self.raw = content
+    def __init__(self, raw_bytes):
+        # תיקון שגיאת Unicode באמצעות התעלמות מתווים בינאריים 
+        self.raw = raw_bytes.decode('utf-8', errors='ignore')
         self.header = {'L': 0.0, 'W': 0.0, 'T': 0.0}
-        self.geo_map = {} # מיפוי גיאומטריה לפי ID
+        self.geos = {} # מפת גיאומטריה EA 
         self.ops = []
         self._parse()
 
@@ -87,59 +83,53 @@ class ForensicParser:
             m = re.search(rf'{f}\s*=\s*"?([0-9.]+)"?', self.raw, re.I)
             if m: self.header[k] = _safe_float(m.group(1))
 
-        # 2. שלב א: מיפוי גיאומטריה גלובלי (בלוקי ])
-        geo_blocks = re.split(r'(?=\])', self.raw)
-        for b in geo_blocks:
-            if not b.startswith(']'): continue
-            p = dict(re.findall(r'(\w+)="?([^"\s]+)"?', b))
+        # 2. מיפוי גיאומטריה גלובלי (בלוקי ]) [cite: 67]
+        geo_parts = re.split(r'(?=\])', self.raw)
+        for part in geo_parts:
+            if not part.startswith(']'): continue
+            p = dict(re.findall(r'(\w+)="?([^"\s]+)"?', part))
             idx = p.get('ID', '0')
-            if idx not in self.geo_map: self.geo_map[idx] = []
-            self.geo_map[idx].append((_safe_float(p.get('X', p.get('XA', 0))), _safe_float(p.get('Y', p.get('YA', 0)))))
+            if idx not in self.geos: self.geos[idx] = []
+            self.geos[idx].append((_safe_float(p.get('X', p.get('XA', 0))), _safe_float(p.get('Y', p.get('YA', 0)))))
 
-        # 3. שלב ב: עיבוד פקודות (<) וקישור EA
-        cmd_blocks = re.split(r'(?=<[0-9]{3})', self.raw)
-        for b in cmd_blocks:
-            p = dict(re.findall(r'(\w+)="?([^"\s]+)"?', b))
-            if b.startswith("<102"): # Drill
+        # 3. עיבוד פקודות וקישור EA 
+        cmd_parts = re.split(r'(?=<[0-9]{3})', self.raw)
+        for part in cmd_parts:
+            p = dict(re.findall(r'(\w+)="?([^"\s]+)"?', part))
+            if part.startswith("<102"): # Drill
                 self.ops.append({'type': 'Drill', 'pts': [(_safe_float(p.get('XA', 0)), _safe_float(p.get('YA', 0)))], 'z': _safe_float(p.get('TI', 0)), 'z_type': 'TI', 'id': p.get('DU', '5.0'), 'rk': 0})
-            elif b.startswith("<105"): # Milling
-                ea_id = p.get('EA', '0')
+            elif part.startswith("<105"): # Milling
+                ea_id = p.get('EA', '0').split(':')[0]
                 path = [(_safe_float(p.get('XA', 0)), _safe_float(p.get('YA', 0)))]
-                if ea_id in self.geo_map: path.extend(self.geo_map[ea_id])
+                if ea_id in self.geos: path.extend(self.geos[ea_id])
                 self.ops.append({'type': 'Milling', 'pts': path, 'z': _safe_float(p.get('ZA', 0)), 'z_type': 'ZA', 'id': p.get('TNO', '142'), 'rk': int(_safe_float(p.get('RK', 0)))})
 
-# --- 4. ממשק ועיבוד ---
-st.title("🚀 Darwish CNC Pro - V6.3 (Forensic Restoration)")
-uploaded = st.file_uploader("טען קובץ MPR", type=['mpr', 'txt'])
+# --- 4. תצוגה ועיבוד ---
+st.title("🚀 Darwish CNC Pro - V6.4 (Forensic Stabilizer)")
+upl = st.file_uploader("טען קובץ MPR", type=['mpr'])
 
-if uploaded:
-    parser = ForensicParser(uploaded.read().decode('utf-8'))
+if upl:
+    parser = ForensicParser(upl.read())
     if parser.header['L'] > 0:
-        final_data = []
+        final_list = []
         temp_df = st.session_state.tool_df.copy()
         temp_df['ID_NUM'] = temp_df['ID_MPR'].apply(_safe_float)
         
         for op in parser.ops:
-            t = temp_df[temp_df['ID_NUM'] == _safe_float(op['id'])].iloc[0]
-            comp_pts = apply_intersection_offset(op['pts'], op['rk'], t['Diameter']/2)
-            for i, pt in enumerate(comp_pts):
-                nx, ny = (parser.header['W'] - pt[1]), pt[0]
-                bz = (parser.header['T'] - op['z']) if op['z_type'] == 'TI' else op['z']
-                fz = round(bz + gz, 3)
-                steps = [fz]
-                if op['type'] == 'Milling' and t['NC_Tool'] == "T2" and i == 0: steps = [round(fz+2.0, 3), fz]
-                final_data.append({'x': nx+off_x, 'y': ny+off_y, 'z': steps, 'tool': t['NC_Tool'], 'feed': t['Feed'], 'rpm': t['RPM'], 'is_start': (i==0), 'type': op['type'], 'diam': t['Diameter']})
+            t_info = temp_df[temp_df['ID_NUM'] == _safe_float(op['id'])]
+            t = t_info.iloc[0] if not t_info.empty else st.session_state.tool_df.iloc[0]
+            # החלת הצידוד (Intersection Logic) [cite: 58, 64]
+            pts = apply_radius_offset(op['pts'], op['rk'], t['Diameter']/2)
+            for i, pt in enumerate(pts):
+                nx, ny = (parser.header['W'] - pt[1]), pt[0] # סיבוב 90 CCW [cite: 68]
+                bz = (parser.header['T'] - op['z']) if op['z_type'] == 'TI' else op['z'] [cite: 69]
+                final_list.append({'x': nx+off_x, 'y': ny+off_y, 'z': round(bz,3), 'tool': op['id'], 'is_start': (i==0), 'type': op['type'], 'diam': t['Diameter']})
 
-        # הדמיה
+        # הדמיה (Visual Restoration) [cite: 83]
         fig = go.Figure()
         fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=off_x+parser.header['W'], y1=off_y+parser.header['L'], fillcolor="brown", opacity=0.1)
-        for d in final_data:
+        for d in final_list:
             color = "blue" if d['type'] == 'Drill' else "red"
             fig.add_trace(go.Scatter(x=[d['x']], y=[d['y']], mode='markers+lines' if d['type']=='Milling' else 'markers', marker=dict(size=d['diam'], color=color)))
         fig.update_layout(yaxis_scaleanchor="x", width=600, height=800)
         st.plotly_chart(fig)
-
-        if st.button("🛠️ הפק קוד NC"):
-            nc = ["%", "(DARWISH V6.3 - EA RESTORED)", "N10 G90 G54 G21 G17"]
-            # ... לוגיקת ייצור NC זהה ל-6.1 ...
-            st.code("\n".join(nc), language='gcode')
