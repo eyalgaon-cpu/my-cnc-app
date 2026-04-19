@@ -6,14 +6,14 @@ import math
 import numpy as np
 
 # --- חוק יסוד: פרוטוקול דרוויש 2026 ---
-# סטטוס: גרסה 6.1 - הרמטית (V2.0 Radius Offset & Path Restoration)
+# סטטוס: גרסה 6.2 - הרמטית (Super-Parser Path Restoration & V2.0 Offset)
 # שפה: עברית טכנית (שימוש במילים מילימטר וסנטימטר בלבד)
 
-st.set_page_config(page_title="Darwish CNC Pro - V6.1", layout="wide")
+st.set_page_config(page_title="Darwish CNC Pro - V6.2", layout="wide")
 
 # הגדרות מכונה (אבי - ELKUM ELP1330DU)
-MACHINE_WIDTH_X = 1300.0  # מילימטר
-MACHINE_LENGTH_Y = 3050.0 # מילימטר
+MACHINE_WIDTH_X = 1300.0
+MACHINE_LENGTH_Y = 3050.0
 
 # --- 1. ניהול מסד כלים (Industrial Tool Database) ---
 if 'tool_df' not in st.session_state:
@@ -30,7 +30,7 @@ if 'tool_df' not in st.session_state:
 with st.sidebar:
     st.header("🛠️ הגדרות ייצור")
     with st.expander("עריכת מסד כלים (T1-T49)", expanded=False):
-        st.session_state.tool_df = st.data_editor(st.session_state.tool_df, num_rows="dynamic", key="tool_editor_v61")
+        st.session_state.tool_df = st.data_editor(st.session_state.tool_df, num_rows="dynamic", key="tool_editor_v62")
     st.markdown("---")
     off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=0.0, step=1.0)
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0, step=1.0)
@@ -58,7 +58,6 @@ def apply_golden_offset(points, rk, radius):
     
     for i in range(len(points)):
         p = np.array(points[i])
-        # חישוב וקטור כיוון (מקטע נוכחי או קודם)
         if i < len(points) - 1:
             v = np.array(points[i+1]) - p
         else:
@@ -70,15 +69,13 @@ def apply_golden_offset(points, rk, radius):
             
         u = v / mag
         nL = np.array([-u[1], u[0]]) # נורמל שמאלי
-        
-        # הזזה בערך הרדיוס בהתאם ל-RK
         new_p = p + (nL * radius * side)
         offset_points.append(tuple(new_p))
         
     return offset_points
 
-# --- 3. Parser הרמטי (Restoration Path) ---
-class RestorationParser:
+# --- 3. Super-Parser (Sequential Path Chaining) ---
+class SuperParser:
     def __init__(self, content):
         self.raw = content
         self.header = {'L': 0.0, 'W': 0.0, 'T': 0.0}
@@ -86,64 +83,75 @@ class RestorationParser:
         self._parse()
 
     def _parse(self):
+        # קריאת כותרת
         for key, field in [('L','l'), ('W','w'), ('T','t')]:
             match = re.search(rf'{field}\s*=\s*"?([0-9.]+)"?', self.raw, re.IGNORECASE)
             if match: self.header[key] = _safe_float(match.group(1))
 
-        # סריקה גלובלית לחיבור גיאומטריה
-        blocks = re.split(r'(?=<[0-9]{3}|\][23])', self.raw)
+        # סריקה שורה-שורה למניעת איבוד גיאומטריה
+        lines = self.raw.split('\n')
         current_op = None
         
-        for block in blocks:
-            params = dict(re.findall(r'(\w+)="?([^"\s]+)"?', block))
+        for line in lines:
+            params = dict(re.findall(r'(\w+)="?([^"\s]+)"?', line))
             
-            if block.startswith("<102"): # קידוחים
+            if "<102" in line: # קידוחים
                 num = int(_safe_float(params.get('AN', 1)))
                 dist = _safe_float(params.get('AB', 0))
                 ang = math.radians(_safe_float(params.get('WI', 0)))
                 for i in range(num):
                     rx = _safe_float(params.get('XA', 0)) + (i * dist * math.cos(ang))
                     ry = _safe_float(params.get('YA', 0)) + (i * dist * math.sin(ang))
-                    self.ops.append({'type': 'Drill', 'points': [(rx, ry)], 'raw_z': _safe_float(params.get('TI', 0)), 'z_type': 'TI', 'mpr_id': params.get('DU', '5.0'), 'rk': 0})
+                    self.ops.append({
+                        'type': 'Drill', 'points': [(rx, ry)], 
+                        'raw_z': _safe_float(params.get('TI', 0)), 'z_type': 'TI', 
+                        'mpr_id': params.get('DU', '5.0'), 'rk': 0
+                    })
 
-            elif block.startswith("<105"): # תחילת כרסום
+            elif "<105" in line: # תחילת כרסום
+                xa = _safe_float(params.get('XA', 0))
+                ya = _safe_float(params.get('YA', 0))
                 current_op = {
                     'type': 'Milling', 
-                    'points': [(_safe_float(params.get('XA', 0)), _safe_float(params.get('YA', 0)))],
+                    'points': [(xa, ya)],
                     'raw_z': _safe_float(params.get('ZA', 0)), 'z_type': 'ZA',
                     'mpr_id': params.get('TNO', '142'), 'rk': int(_safe_float(params.get('RK', 0)))
                 }
                 self.ops.append(current_op)
 
-            elif (block.startswith("]2") or block.startswith("]3")) and current_op: # המשכיות מסלול
+            elif ("]2" in line or "]3" in line) and current_op: # המשכיות מסלול
                 px = _safe_float(params.get('X', params.get('XA', 0)))
                 py = _safe_float(params.get('Y', params.get('YA', 0)))
-                current_op['points'].append((px, py))
+                # תיקון נקודת התחלה אם הופיעה רק ב-]2
+                if len(current_op['points']) == 1 and current_op['points'][0] == (0,0) and (px != 0 or py != 0):
+                    current_op['points'] = [(px, py)]
+                else:
+                    current_op['points'].append((px, py))
 
-# --- 4. עיבוד ייצור ---
-def process_v61(parser, tool_df, ox, oy, global_z):
+# --- 4. עיבוד ייצור (Production Logic) ---
+def process_v62(parser, tool_df, ox, oy, global_z):
     processed = []
     temp_df = tool_df.copy()
     temp_df['ID_NUM'] = temp_df['ID_MPR'].apply(_safe_float)
 
     for op in parser.ops:
+        if not op['points']: continue
+        
         t_info = temp_df[temp_df['ID_NUM'] == _safe_float(op['mpr_id'])]
         t_row = t_info.iloc[0] if not t_info.empty else tool_df[tool_df['NC_Tool'] == "T2"].iloc[0]
         
-        # החלת צידוד וקטורי (Golden Formula V2.0)
+        # החלת צידוד (Net Size Fix)
         comp_points = apply_golden_offset(op['points'], op['rk'], t_row['Diameter']/2)
         
         for i, p in enumerate(comp_points):
             nx, ny = rotate_90_ccw(p[0], p[1], parser.header['W'], parser.header['L'])
             
-            # לוגיקת Z (ZA + TI)
             base_z = (parser.header['T'] - op['raw_z']) if op['z_type'] == 'TI' else op['raw_z']
             final_z = round(base_z + global_z, 3)
             
             z_steps = [final_z]
-            if op['type'] == 'Milling' and t_row['NC_Tool'] == "T2" and final_z < 0.1 and i == 0:
-                # Scoring (Bottom-Up) בגובה ZA+2 מילימטר
-                z_steps = [round(final_z + 2.0, 3), final_z]
+            if op['type'] == 'Milling' and t_row['NC_Tool'] == "T2" and i == 0:
+                z_steps = [round(final_z + 2.0, 3), final_z] # Scoring ZA+2
 
             processed.append({
                 'x': nx + ox, 'y': ny + oy, 'z': z_steps,
@@ -153,40 +161,35 @@ def process_v61(parser, tool_df, ox, oy, global_z):
             })
     return sorted(processed, key=lambda x: 99 if x['tool'] == "T2" else 1)
 
-# --- 5. ממשק משתמש (Visual Master) ---
-st.title("🚀 Darwish CNC Pro - V6.1 (Golden Formula V2.0)")
+# --- 5. ממשק משתמש ---
+st.title("🚀 Darwish CNC Pro - V6.2 (The Super-Parser)")
 uploaded = st.file_uploader("טען קובץ MPR", type=['mpr', 'txt'])
 
 if uploaded:
-    parser = RestorationParser(uploaded.read().decode('utf-8', errors='ignore'))
+    parser = SuperParser(uploaded.read().decode('utf-8', errors='ignore'))
     if parser.header['L'] == 0: st.error("שגיאה בקריאת מידות הפלטה.")
     else:
-        final_list = process_v61(parser, st.session_state.tool_df, off_x, off_y, gz)
-        st.success(f"לוח: {parser.header['L']}x{parser.header['W']} מילימטר (צידוד V2.0 פעיל)")
+        final_list = process_v62(parser, st.session_state.tool_df, off_x, off_y, gz)
+        st.success(f"לוח: {parser.header['L']}x{parser.header['W']} מילימטר (צידוד RK פעיל)")
 
         fig = go.Figure()
-        # שולחן ופלטה
-        fig.add_shape(type="rect", x0=0, y0=0, x1=MACHINE_WIDTH_X, y1=MACHINE_LENGTH_Y, fillcolor="gray", opacity=0.05)
         fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=off_x+parser.header['W'], y1=off_y+parser.header['L'], line_color="brown", fillcolor="brown", opacity=0.15)
         
-        # שרטוט המסלולים והנקודות
         for idx, b in enumerate(final_list):
             color = "blue" if b['type'] == 'Drill' else "red"
-            mode = 'markers+lines' if b['type'] == 'Milling' else 'markers'
-            
             fig.add_trace(go.Scatter(
-                x=[b['x']], y=[b['y']], mode=mode,
+                x=[b['x']], y=[b['y']], 
+                mode='markers+lines' if b['type'] == 'Milling' else 'markers',
                 marker=dict(size=b['diam'], sizemode='diameter', color=color, opacity=0.7),
                 line=dict(color="red", width=2) if b['type'] == 'Milling' else None,
-                name=f"{b['type']} {idx}",
                 hovertemplate=f"<b>{b['type']}: {b['tool']}</b><br>Z סופי: {b['z'][-1]}<extra></extra>"
             ))
 
-        fig.update_layout(title="הדמיית ייצור 1:1 (Net Size)", xaxis=dict(range=[-50, 1400]), yaxis=dict(range=[-50, 3100]), width=600, height=800, dragmode='pan', yaxis_scaleanchor="x", showlegend=False)
+        fig.update_layout(yaxis_scaleanchor="x", width=600, height=800, dragmode='pan', showlegend=False)
         st.plotly_chart(fig, config={'scrollZoom': True})
 
         if st.button("🛠️ הפק קוד NC"):
-            nc = ["%", "(DARWISH V6.1 - V2.0 RK)", "N10 G90 G54 G21 G17"]
+            nc = ["%", "(DARWISH V6.2 - SUPER PARSER)", "N10 G90 G54 G21 G17"]
             curr_t, l = None, 20
             for b in final_list:
                 if b['tool'] != curr_t:
