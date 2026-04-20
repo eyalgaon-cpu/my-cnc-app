@@ -4,9 +4,9 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 51.2 - THE GEOMETRIC PRECISION MASTER
-# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 51.1 עם תיקון עוגן מרכזי וממשק עומק כפול.
-st.set_page_config(page_title="Darwish 51.2 Precision", layout="wide")
+# Darwish 51.3 - THE SELECTIVE ISOLATION MASTER
+# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 51.2 עם בידוד בלוקים לפי גיאומטריה.
+st.set_page_config(page_title="Darwish 51.3 Precision", layout="wide")
 
 # --- 1. ניהול הגדרות ופרופיל (Persistence) ---
 def export_config():
@@ -27,7 +27,7 @@ def import_config(uploaded_file):
         return True
     return False
 
-# --- 2. מסד כלים מורחב (Industrial DB - Baseline 51.1) ---
+# --- 2. מסד כלים מורחב (Industrial DB - Baseline 51.2) ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
         {"T_CNC": "T1", "MPR_Name": "130", "תיאור": "כרסום 40 מילימטר", "קוטר": 40.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 4000},
@@ -49,7 +49,7 @@ with st.sidebar:
         cfg_file = st.file_uploader("טען פרופיל (JSON)", type=['json'])
         if cfg_file:
             if import_config(cfg_file): st.success("פרופיל נטען בהצלחה")
-        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v512")
+        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v513")
         st.download_button("שמור פרופיל נוכחי", export_config(), "darwish_config.json")
 
     st.divider()
@@ -58,12 +58,12 @@ with st.sidebar:
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
     gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
 
-# --- 3. ליבה מתמטית v51.2 (Geometric Precision Master) ---
+# --- 3. ליבה מתמטית v51.3 (Selective Isolation Engine) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
 
-def rotate_pt_v512(x, y, angle_deg):
+def rotate_pt_v513(x, y, angle_deg):
     rad = math.radians(angle_deg)
     return x * math.cos(rad) - y * math.sin(rad), x * math.sin(rad) + y * math.cos(rad)
 
@@ -75,7 +75,7 @@ def find_tool_numeric(mpr_id, df):
     except: pass
     return df[df['T_CNC'] == "T2"].iloc[0]
 
-def calculate_path_v512(pts, r, mpr_rk, is_pocket=False):
+def calculate_path_v513(pts, r, mpr_rk, is_pocket=False):
     if r <= 0 or len(pts) < 2: return pts
     pts_arr = np.array(pts); n = len(pts_arr)
     area = sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0
@@ -129,7 +129,7 @@ def get_f(key, block, default=0.0):
     return _safe_float(m.group(1)) if m else default
 
 # --- 4. ממשק הפקה והדמיה ---
-st.title("🏭 דרוויש 51.2 - THE GEOMETRIC PRECISION MASTER")
+st.title("🏭 דרוויש 51.3 - THE SELECTIVE ISOLATION MASTER")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
@@ -174,16 +174,15 @@ if upl:
                     ops.append({
                         't_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': ti_val, 'z_off': t_info['Z_Offset'], 
                         'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 
-                        'type': tag, 'ea': f"DR_{tag}_{round(curr_xa,1)}", 'rk': "WRKL", 'is_pocket': False
+                        'type': tag, 'ea': f"DRILL_{round(curr_xa,1)}", 'rk': "WRKL", 'is_pocket': False
                     })
             elif tag == '112':
-                # PRECISION 51.2: KO=00 Center Anchor Fix & Double Rotation
+                # KO=00 Center Anchor Fix from 51.2
                 xa, ya, la, br, wi = get_f('XA', bc), get_f('YA', bc), get_f('LA', bc), get_f('BR', bc), get_f('WI', bc)
-                # Local coordinates relative to geometric center (XA, YA)
                 rect_local = [(-la/2, -br/2), (la/2, -br/2), (la/2, br/2), (-la/2, br/2), (-la/2, -br/2)]
                 f_pts = []
                 for px, py in rect_local:
-                    rx, ry = rotate_pt_v512(px, py, wi)
+                    rx, ry = rotate_pt_v513(px, py, wi)
                     fx, fy = rx + xa, ry + ya
                     f_pts.append([wp_w - fy, fx] if rotate else [fx, fy])
                 ops.append({
@@ -207,9 +206,11 @@ if upl:
 
         visual_blocks = {}
         for op in ops:
-            v_key = (op['t_cnc'], op['type'])
+            # ISOLATION MASTER: Key includes Tool, Type, AND Geometry Points to separate shapes
+            pts_key = tuple(tuple(p) for p in op['pts'])
+            v_key = (op['t_cnc'], op['type'], pts_key) if op['type'] != '102' else (op['t_cnc'], op['type'])
             if v_key not in visual_blocks:
-                visual_blocks[v_key] = {'t_cnc': op['t_cnc'], 'desc': op['desc'], 'type': op['type'], 'is_dr': op['type'] == '102', 'paths': [], 's': op['s'], 'f': op['f'], 'diam': op['diam']}
+                visual_blocks[v_key] = {'t_cnc': op['t_cnc'], 'desc': op['desc'], 'type': op['type'], 'is_dr': op['type'] == '102', 'paths': [], 's': op['s'], 'f': op['f'], 'diam': op['diam'], 'ea_id': op['ea']}
             visual_blocks[v_key]['paths'].append(op)
 
         with col_cfg:
@@ -218,7 +219,7 @@ if upl:
             for i, (v_key, v_block) in enumerate(visual_blocks.items()):
                 z_vals = sorted(list(set(p['z'] for p in v_block['paths'])), reverse=True)
                 typeName = "Routing" if v_block['type'] in ['105','130','181'] else ("Pocket" if v_block['type'] == '112' else "Drill")
-                with st.expander(f"{v_block['t_cnc']} | {v_block['desc']} | {typeName}"):
+                with st.expander(f"{v_block['t_cnc']} | {v_block['desc']} | {typeName} (EA:{v_block['ea_id']})"):
                     active = st.checkbox("כלול בייצור", value=True, key=f"act_{i}")
                     f_z = []
                     for zi, z in enumerate(z_vals):
@@ -226,16 +227,16 @@ if upl:
                         st.markdown(f"**פסיעה {zi+1}** (TI: {cur_ti} מילימטר)")
                         f_z.append(st.number_input(f"גובה Z (מפני השולחן)", value=float(z), key=f"z_{i}_{zi}"))
                     block_configs.append({'id': i, 'active': active, 'passes': f_z, 'orig_z': z_vals, 'v_block': v_block})
-            order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['v_block']['t_cnc']} ({block_configs[x]['v_block']['desc']}) - {block_configs[x]['v_block']['type']}")
+            order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['v_block']['t_cnc']} ({block_configs[x]['v_block']['desc']}) - EA:{block_configs[x]['v_block']['ea_id']}")
 
-        # --- ייצור NC (Production Master 51.2) ---
-        nc = ["%", "(DARWISH 51.2 - PRECISION MASTER)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        # --- ייצור NC (Production Master 51.3) ---
+        nc = ["%", "(DARWISH 51.3 - ISOLATION MASTER)", f"N10 G90 G54 G21 G17"]; n_c = 20
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
             nc.extend([f"N{n_c} M05", f"N{n_c+5} {v_block['t_cnc']} M06", f"N{n_c+10} G43 H{v_block['t_cnc'][1:]}", f"N{n_c+15} S{int(v_block['s'])} M03"]); n_c += 20
             for it in v_block['paths']:
                 zv_final = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz
-                path = calculate_path_v512(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                path = calculate_path_v513(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                 for pi, p in enumerate(path):
                     if pi == 0:
                         ramp = 0 if (it['is_pocket'] or it['type'] == '102') else ramp_len_global
@@ -244,7 +245,7 @@ if upl:
                     else: nc.append(f"N{n_c} G01 X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F{int(it['f'])}"); n_c += 5
                 nc.append(f"N{n_c} G00 Z{safety_h:.3f}"); n_c += 5
         nc.extend([f"N{n_c} M30", "%"])
-        with col_cfg: st.download_button(f"📥 הורד NC (גרסה 51.2)", "\n".join(nc), f"{f_file.name}.nc")
+        with col_cfg: st.download_button(f"📥 הורד NC (גרסה 51.3)", "\n".join(nc), f"{f_file.name}.nc")
 
         with col_vis:
             fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
@@ -261,7 +262,7 @@ if upl:
                         fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', marker=dict(size=it['diam'], color=color), hoverinfo="text", text=h_text, showlegend=False))
                     else:
                         fig.add_trace(go.Scatter(x=[x+off_x for x in ox]+[ox[0]+off_x], y=[y+off_y for y in oy]+[oy[0]+off_y], mode='lines', line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
-                        s_p = calculate_path_v512(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                        s_p = calculate_path_v513(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                         px = [p[0]+off_x for p in s_p] + [None]; py = [p[1]+off_y for p in s_p] + [None]
                         fig.add_trace(go.Scatter(x=px, y=py, mode='lines', line=dict(color="yellow", dash="dash"), hoverinfo="text", text=h_text, showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
