@@ -4,9 +4,9 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 50.0 - THE PRECISION MASTER ENGINE
-# חוק יסוד: איסור מוחלט על צמצום קוד. תיקון הדמיה ומיספור שורות.
-st.set_page_config(page_title="Darwish 50.0 Precision", layout="wide")
+# Darwish 50.1 - THE MASTER PRECISION
+# חוק יסוד: איסור מוחלט על צמצום קוד. שחזור פונקציות ליבה ותיקון לופים גיאומטריים.
+st.set_page_config(page_title="Darwish 50.1 Precision", layout="wide")
 
 # --- 1. מסד כלים (Industrial DB - Locked) ---
 if 'tool_db' not in st.session_state:
@@ -27,27 +27,33 @@ if 'tool_db' not in st.session_state:
 with st.sidebar:
     st.header("🛠️ ניהול ייצור")
     with st.expander("מסד כלים", expanded=False):
-        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v50")
+        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v50_1")
     off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=0.0)
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
     gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
 
-# --- 2. ליבה מתמטית v50.0 (Precision Engine) ---
+# --- 2. ליבה מתמטית v50.1 (Precision Vector Logic) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
 
-def calculate_path_v50(pts, r, mpr_rk, is_pocket=False):
-    if r <= 0 or len(pts) < 2: return pts, []
+def find_tool_numeric(mpr_id, df):
+    try:
+        target = round(_safe_float(mpr_id), 1)
+        for _, row in df.iterrows():
+            if round(_safe_float(row['MPR_Name']), 1) == target: return row
+    except: pass
+    return df[df['T_CNC'] == "T2"].iloc[0]
+
+def calculate_path_v50_1(pts, r, mpr_rk, is_pocket=False):
+    if r <= 0 or len(pts) < 2: return pts, pts
     pts_arr = np.array(pts); n = len(pts_arr)
     area = sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0
     is_ccw = area > 0
     side = (1 if is_ccw else -1) if is_pocket else (1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0)
-    if side == 0: return pts, []
+    if side == 0: return pts, pts
 
-    full_path = [] # (X, Y, is_arc, cx, cy, d)
-    sim_pts = [] # לטובת הדמיה חלקה ב-Plotly
-    
+    full_path, sim_pts = [], []
     for i in range(n - 1):
         p1, p2 = pts_arr[i], pts_arr[i+1]
         v = p2 - p1; mag = np.linalg.norm(v)
@@ -55,24 +61,24 @@ def calculate_path_v50(pts, r, mpr_rk, is_pocket=False):
         norm = side * np.array([-v[1], v[0]]) / mag
         s_off, e_off = p1 + norm * r, p2 + norm * r
         
-        if i > 0 and not np.allclose(full_path[-1][:2], s_off):
-            d = "G03" if side > 0 else "G02"
-            full_path.append((s_off[0], s_off[1], True, p1[0], p1[1], d))
-            # אינטרפולציה ויזואלית לקשת
-            prev_e = np.array(full_path[-2][:2])
-            for t in np.linspace(0.1, 0.9, 5):
+        if i > 0 and len(full_path) > 0:
+            prev_e = np.array(full_path[-1][:2])
+            if not np.allclose(prev_e, s_off, atol=1e-3):
+                d = "G03" if side > 0 else "G02"
+                full_path.append((s_off[0], s_off[1], True, p1[0], p1[1], d))
+                # אינטרפולציה ויזואלית חלקה
                 angle_start = math.atan2(prev_e[1]-p1[1], prev_e[0]-p1[0])
                 angle_end = math.atan2(s_off[1]-p1[1], s_off[0]-p1[0])
                 if side > 0 and angle_end < angle_start: angle_end += 2*math.pi
                 if side < 0 and angle_end > angle_start: angle_end -= 2*math.pi
-                curr_a = angle_start + t*(angle_end - angle_start)
-                sim_pts.append([p1[0] + r*math.cos(curr_a), p1[1] + r*math.sin(curr_a)])
+                for t in np.linspace(0.1, 0.9, 8):
+                    curr_a = angle_start + t*(angle_end - angle_start)
+                    sim_pts.append([p1[0] + r*math.cos(curr_a), p1[1] + r*math.sin(curr_a)])
 
         if i == 0: 
             full_path.append((s_off[0], s_off[1], False, 0, 0, ""))
-            sim_pts.append(s_off)
         full_path.append((e_off[0], e_off[1], False, 0, 0, ""))
-        sim_pts.append(e_off)
+        sim_pts.append(s_off); sim_pts.append(e_off)
     return full_path, sim_pts
 
 def get_f(key, block, default=0.0):
@@ -80,7 +86,7 @@ def get_f(key, block, default=0.0):
     return _safe_float(m.group(1)) if m else default
 
 # --- 3. ממשק הפקה והדמיה ---
-st.title("🏭 דרוויש 50.0 - THE PRECISION MASTER")
+st.title("🏭 דרוויש 50.1 - THE MASTER PRECISION")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
@@ -117,15 +123,17 @@ if upl:
 
             if tag == '102':
                 xa, ya = get_f('XA', bc), get_f('YA', bc)
-                for i in range(int(get_f('AN', bc, 1))):
-                    curr_xa, curr_ya = xa + (i*get_f('AB', bc)*get_f('XR', bc, 1.0)), ya + (i*get_f('AB', bc)*get_f('YR', bc, 0.0))
+                an, ab = int(get_f('AN', bc, 1)), get_f('AB', bc, 0.0)
+                xr, yr = get_f('XR', bc, 1.0), get_f('YR', bc, 0.0)
+                for i in range(an):
+                    curr_xa, curr_ya = xa + (i*ab*xr), ya + (i*ab*yr)
                     f_pts = [[wp_w - curr_ya, curr_xa]] if rotate else [[curr_xa, curr_ya]]
                     ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'pts': f_pts, 'diam': t_info['קוטר'], 'rad': t_info['קוטר']/2, 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': f"DR_{tag}_{round(curr_xa,1)}", 'rk': "WRKL", 'is_pocket': False})
             else:
                 geoid = re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE"
                 ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'pts': geos.get(geoid, [[get_f('XA', bc), get_f('YA', bc)]]), 'diam': t_info['קוטר'], 'rad': t_info['קוטר']/2, 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': geoid, 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL", 'is_pocket': (tag == '181')})
 
-        # --- היררכיית קיבוץ (שחזור 49.7) ---
+        # --- היררכיית קיבוץ (שחזור מלא 49.7) ---
         geo_paths = {}
         for op in ops:
             key = (op['t_cnc'], op['ea'], op['type'] == '102')
@@ -152,8 +160,8 @@ if upl:
                     block_configs.append({'id': i, 'active': active, 'passes': f_z, 'v_block': v_block})
             order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['v_block']['t_cnc']} ({block_configs[x]['v_block']['desc']})")
 
-        # --- ייצור NC (מניעת יתירות + דיוק) ---
-        nc = ["%", "(DARWISH 50.0 - PRECISION MASTER)", "N10 G90 G54 G21 G17"]; n_c = 20; written = set()
+        # --- ייצור NC (וקטור מלא + מונה ייחודי) ---
+        nc = ["%", "(DARWISH 50.1 - MASTER PRECISION)", "N10 G90 G54 G21 G17"]; n_c = 20; written = set()
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
             nc.append(f"N{n_c} M05"); n_c += 5
@@ -175,14 +183,12 @@ if upl:
                             if is_sm:
                                 nc.append(f"N{n_c} G00 X{center[0]+off_x:.3f} Y{center[1]+off_y:.3f}"); n_c += 5
                                 nc.append(f"N{n_c} G01 Z{zv+gz:.3f} F1000"); n_c += 5
-                            path, _ = calculate_path_v50(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                            path, _ = calculate_path_v50_1(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                             for pi, p in enumerate(path):
                                 px, py, is_arc, cx, cy, d = p
                                 if pi == 0 and not is_sm:
                                     nc.append(f"N{n_c} G00 X{px+off_x-ramp_len_global:.3f} Y{py+off_y:.3f}"); n_c += 5
                                     nc.append(f"N{n_c} G01 Z{zv+gz:.3f} X{px+off_x:.3f} F1500"); n_c += 5
-                                elif pi == 0 and is_sm:
-                                    nc.append(f"N{n_c} G01 X{px+off_x:.3f} Y{py+off_y:.3f} F{int(it['f'])}"); n_c += 5
                                 else:
                                     if is_arc:
                                         prv = path[pi-1]; ii, jj = cx - prv[0], cy - prv[1]
@@ -193,7 +199,7 @@ if upl:
                                         nc.append(f"N{n_c} G01 X{px+off_x:.3f} Y{py+off_y:.3f} F{int(it['f'])}"); n_c += 5
                         nc.append(f"N{n_c} G00 Z35.0"); n_c += 5
         nc.extend([f"N{n_c} M30", "%"])
-        st.download_button(f"📥 הורד NC 50.0", "\n".join(nc), f"{f_file.name}.nc")
+        st.download_button(f"📥 הורד NC 50.1", "\n".join(nc), f"{f_file.name}.nc")
 
         with col_vis:
             fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
@@ -202,12 +208,11 @@ if upl:
             for b_id in order:
                 b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
                 for pg in v_block['paths']:
-                    for it in pg['ops']:
-                        ox, oy = zip(*it['pts']); color = "green" if v_block['is_dr'] else ("red" if any(z <= 0.2 for z in b_cfg['passes']) else "blue")
-                        if it['type'] == '102': fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', marker=dict(size=it['diam'], color=color), showlegend=False))
-                        else:
-                            fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2), showlegend=False))
-                            _, s_p = calculate_path_v50(it['pts'], it['rad'], it['rk'], it['is_pocket'])
-                            px, py = [p[0]+off_x for p in s_p], [p[1]+off_y for p in s_p]
-                            fig.add_trace(go.Scatter(x=px, y=py, mode='lines', line=dict(color="yellow", dash="dash"), showlegend=False))
+                    ox, oy = zip(*pg['pts']); color = "green" if v_block['is_dr'] else ("red" if any(z <= 0.2 for z in b_cfg['passes']) else "blue")
+                    if v_block['is_dr']: fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', marker=dict(size=v_block['diam'], color=color), showlegend=False))
+                    else:
+                        fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='lines', line=dict(color=color, width=2), showlegend=False))
+                        _, s_p = calculate_path_v50_1(pg['pts'], v_block['rad'], pg['rk'], pg['is_pocket'])
+                        px, py = [p[0]+off_x for p in s_p], [p[1]+off_y for p in s_p]
+                        fig.add_trace(go.Scatter(x=px, y=py, mode='lines', line=dict(color="yellow", dash="dash"), showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
