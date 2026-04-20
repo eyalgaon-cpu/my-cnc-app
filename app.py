@@ -4,9 +4,9 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 50.6 - THE PRODUCTION MASTER
+# Darwish 50.7 - THE PRODUCTION MASTER
 # חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 50.5 עם בקרת עומק ושיחזור ויזואלי מלא.
-st.set_page_config(page_title="Darwish 50.6 Production", layout="wide")
+st.set_page_config(page_title="Darwish 50.7 Production", layout="wide")
 
 # --- 1. ניהול הגדרות ופרופיל (Persistence) ---
 def export_config():
@@ -51,7 +51,7 @@ with st.sidebar:
         if cfg_file:
             if import_config(cfg_file): st.success("פרופיל נטען בהצלחה")
         
-        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v506")
+        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v507")
         st.download_button("שמור פרופיל נוכחי", export_config(), "darwish_config.json")
 
     st.divider()
@@ -60,7 +60,7 @@ with st.sidebar:
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
     gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
 
-# --- 3. ליבה מתמטית v50.6 (Isolated Inset Engine) ---
+# --- 3. ליבה מתמטית v50.7 (Isolated Inset Engine) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
@@ -73,7 +73,7 @@ def find_tool_numeric(mpr_id, df):
     except: pass
     return df[df['T_CNC'] == "T2"].iloc[0]
 
-def calculate_path_v506(pts, r, mpr_rk, is_pocket=False):
+def calculate_path_v507(pts, r, mpr_rk, is_pocket=False):
     if r <= 0 or len(pts) < 2: return pts
     pts_arr = np.array(pts); n = len(pts_arr)
     area = sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0
@@ -102,7 +102,6 @@ def calculate_path_v506(pts, r, mpr_rk, is_pocket=False):
         return np.array([x1+ua*(x2-x1), y1+ua*(y2-y1)])
     
     new_path = []
-    # Start Point
     p0 = shifted[0][0]
     if is_pocket: p0 = [np.clip(p0[0], min_x+r_guard, max_x-r_guard), np.clip(p0[1], min_y+r_guard, max_y-r_guard)]
     new_path.append(tuple(p0))
@@ -118,7 +117,6 @@ def calculate_path_v506(pts, r, mpr_rk, is_pocket=False):
             else: new_path.append(tuple(p_inter))
         else: new_path.append(tuple(p_inter))
 
-    # End Point
     pE = shifted[-1][1]
     if is_pocket: pE = [np.clip(pE[0], min_x+r_guard, max_x-r_guard), np.clip(pE[1], min_y+r_guard, max_y-r_guard)]
     new_path.append(tuple(pE))
@@ -129,7 +127,7 @@ def get_f(key, block, default=0.0):
     return _safe_float(m.group(1)) if m else default
 
 # --- 4. ממשק הפקה והדמיה ---
-st.title("🏭 דרוויש 50.6 - THE PRODUCTION MASTER")
+st.title("🏭 דרוויש 50.7 - THE PRODUCTION MASTER")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
@@ -188,46 +186,41 @@ if upl:
                     block_configs.append({'id': i, 'active': active, 'passes': f_z, 'orig_z': z_vals, 'v_block': v_block})
             order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']])
 
-        # --- ייצור NC (Production Master 50.6) ---
-        nc = ["%", "(DARWISH 50.6 - PRODUCTION MASTER)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        # --- ייצור NC (Production Master 50.7) ---
+        nc = ["%", "(DARWISH 50.7 - PRODUCTION MASTER)", f"N10 G90 G54 G21 G17"]; n_c = 20
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
             nc.extend([f"N{n_c} M05", f"N{n_c+5} {v_block['t_cnc']} M06", f"N{n_c+10} G43 H{v_block['t_cnc'][1:]}", f"N{n_c+15} S{int(v_block['s'])} M03"]); n_c += 20
             for it in v_block['paths']:
-                # Z Calculation with Tool Offset: Positive Offset = deeper
                 zv_final = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz
-                path = calculate_path_v506(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                path = calculate_path_v507(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                 for pi, p in enumerate(path):
                     if pi == 0:
-                        # Vertical Plunge for pockets, Ramp for routing
                         ramp = 0 if it['is_pocket'] else ramp_len_global
                         nc.append(f"N{n_c} G00 X{p[0]+off_x-ramp:.3f} Y{p[1]+off_y:.3f}"); n_c += 5
                         nc.append(f"N{n_c} G01 Z{zv_final:.3f} X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F1500"); n_c += 5
                     else: nc.append(f"N{n_c} G01 X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F{int(it['f'])}"); n_c += 5
                 nc.append(f"N{n_c} G00 Z{safety_h:.3f}"); n_c += 5
         nc.extend([f"N{n_c} M30", "%"])
-        st.download_button(f"📥 הורד NC (גרסה 50.6)", "\n".join(nc), f"{f_file.name}.nc")
+        st.download_button(f"📥 הורד NC (גרסה 50.7)", "\n".join(nc), f"{f_file.name}.nc")
 
         with col_vis:
-            fig = go.Figure(); 
-            fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
-            # Restore Worktable and Board shapes
+            fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
             fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="Gray", width=2), fillcolor="rgba(128,128,128,0.1)")
             fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=wp_w+off_x, y1=wp_l+off_y, line=dict(color="Sienna", width=3), fillcolor="rgba(139, 69, 19, 0.4)")
             
             for b_id in order:
                 b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
                 for it in v_block['paths']:
-                    # Tooltip with corrected Z values
                     zv_f = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz
-                    h_text = f"<b>{v_block['t_cnc']}</b>: {v_block['desc']}<br>EA: {it['ea']}<br>קוטר בשימוש: {it['diam']} מ\"מ<br>Z סופי (כולל תיקון): {zv_f:.3f} מ\"מ"
+                    h_text = f"<b>{v_block['t_cnc']}</b>: {v_block['desc']}<br>EA: {it['ea']}<br>קוטר בשימוש: {it['diam']} מילימטר<br>Z סופי: {zv_f:.3f} מילימטר"
                     
                     ox, oy = zip(*it['pts']); color = "green" if v_block['is_dr'] else ("red" if any(z <= 0.2 for z in b_cfg['passes']) else "blue")
                     if v_block['is_dr']:
                         fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', marker=dict(size=it['diam'], color=color), hoverinfo="text", text=h_text, showlegend=False))
                     else:
                         fig.add_trace(go.Scatter(x=[x+off_x for x in ox]+[ox[0]+off_x], y=[y+off_y for y in oy]+[oy[0]+off_y], mode='lines', line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
-                        s_p = calculate_path_v506(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                        s_p = calculate_path_v507(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                         px = [p[0]+off_x for p in s_p] + [None]; py = [p[1]+off_y for p in s_p] + [None]
                         fig.add_trace(go.Scatter(x=px, y=py, mode='lines', line=dict(color="yellow", dash="dash"), hoverinfo="text", text=h_text, showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
