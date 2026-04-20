@@ -205,3 +205,4 @@ if upl:
                             fig.add_trace(go.Scatter(x=[x+off_x for x in px], y=[y+off_y for y in py], mode='lines', line=dict(color="yellow", dash="dash", width=1.5), hoverinfo="text", text=h_text, showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
         st.download_button(f"📥 הורד NC (גרסה 49.6)", "\n".join(nc), f"{f_file.name}.nc")
+        
