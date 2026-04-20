@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 # Darwish 50.6 - THE PRODUCTION MASTER
-# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 50.5 עם בקרת עומק ושימור הגדרות.
+# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 50.5 עם בקרת עומק ושיחזור ויזואלי מלא.
 st.set_page_config(page_title="Darwish 50.6 Production", layout="wide")
 
 # --- 1. ניהול הגדרות ופרופיל (Persistence) ---
@@ -27,29 +27,35 @@ def import_config(uploaded_file):
         return True
     return False
 
-# --- 2. מסד כלים (Industrial DB) ---
+# --- 2. מסד כלים מורחב (Industrial DB - Base 50.5) ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
         {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "כרסום 40 מילימטר", "קוטר": 40.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 4000},
         {"T_CNC": "T2", "MPR_Name": "142", "תיאור": "כרסום יהלום 6 מילימטר", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4500},
         {"T_CNC": "T3", "MPR_Name": "158", "תיאור": "כרסום 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3000},
         {"T_CNC": "T4", "MPR_Name": "128", "תיאור": "כרסום 12 מילימטר", "קוטר": 12.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3500},
+        {"T_CNC": "T6", "MPR_Name": "35", "תיאור": "מקדח צירים 35 מילימטר", "קוטר": 35.0, "Z_Offset": 0.0, "RPM": 3000, "Feed": 1000},
+        {"T_CNC": "T8", "MPR_Name": "19.0", "תיאור": "כרסום 19 מילימטר", "קוטר": 19.0, "Z_Offset": 0.0, "RPM": 16000, "Feed": 3000},
+        {"T_CNC": "T10", "MPR_Name": "6.0", "תיאור": "כרסום/מקדח 6 מילימטר", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2000},
         {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "כרסום 3 מילימטר (T11)", "קוטר": 3.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2500},
-        {"T_CNC": "T44", "MPR_Name": "5.0", "תיאור": "מקדח 5 מילימטר", "קוטר": 5.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200}
+        {"T_CNC": "T44", "MPR_Name": "5.0", "תיאור": "מקדח 5 מילימטר", "קוטר": 5.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
+        {"T_CNC": "T47", "MPR_Name": "8.0", "תיאור": "מקדח 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
+        {"T_CNC": "T49", "MPR_Name": "15.0", "תיאור": "מקדח 15 מילימטר", "קוטר": 15.0, "Z_Offset": 0.0, "RPM": 3000, "Feed": 800}
     ])
 
 with st.sidebar:
     st.header("🛠️ ניהול ייצור")
     
-    with st.expander("פרופיל מכונה (אבי)", expanded=True):
+    with st.expander("פרופיל מכונה וכלים", expanded=True):
         cfg_file = st.file_uploader("טען פרופיל (JSON)", type=['json'])
         if cfg_file:
-            if import_config(cfg_file): st.success("פרופיל נטען")
+            if import_config(cfg_file): st.success("פרופיל נטען בהצלחה")
         
         st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v506")
-        st.download_button("שמור פרופיל ייצור", export_config(), "darwish_config.json")
+        st.download_button("שמור פרופיל נוכחי", export_config(), "darwish_config.json")
 
-    safety_h = st.number_input("גובה בטיחות (מילימטר)", value=st.session_state.get('safety_h', 35.0))
+    st.divider()
+    safety_h = st.number_input("גובה בטיחות Z (מילימטר)", value=st.session_state.get('safety_h', 35.0))
     off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=0.0)
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
     gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
@@ -96,6 +102,7 @@ def calculate_path_v506(pts, r, mpr_rk, is_pocket=False):
         return np.array([x1+ua*(x2-x1), y1+ua*(y2-y1)])
     
     new_path = []
+    # Start Point
     p0 = shifted[0][0]
     if is_pocket: p0 = [np.clip(p0[0], min_x+r_guard, max_x-r_guard), np.clip(p0[1], min_y+r_guard, max_y-r_guard)]
     new_path.append(tuple(p0))
@@ -111,6 +118,7 @@ def calculate_path_v506(pts, r, mpr_rk, is_pocket=False):
             else: new_path.append(tuple(p_inter))
         else: new_path.append(tuple(p_inter))
 
+    # End Point
     pE = shifted[-1][1]
     if is_pocket: pE = [np.clip(pE[0], min_x+r_guard, max_x-r_guard), np.clip(pE[1], min_y+r_guard, max_y-r_guard)]
     new_path.append(tuple(pE))
@@ -155,7 +163,13 @@ if upl:
             t_info = find_tool_numeric(t_mpr, st.session_state.tool_db)
             z_abs = round((thick - get_f('TI', bc)), 3) if tag in ['102', '181'] else round(get_f('ZA', bc), 3)
 
-            ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'z_off': t_info['Z_Offset'], 'pts': geos.get(re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE", [[get_f('XA', bc), get_f('YA', bc)]]), 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE", 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL", 'is_pocket': (tag == '181')})
+            ops.append({
+                't_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'z_off': t_info['Z_Offset'], 
+                'pts': geos.get(re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE", [[get_f('XA', bc), get_f('YA', bc)]]), 
+                'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 
+                'ea': re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE", 
+                'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL", 'is_pocket': (tag == '181')
+            })
 
         visual_blocks = {}
         for op in ops:
@@ -164,41 +178,56 @@ if upl:
             visual_blocks[v_key]['paths'].append(op)
 
         with col_cfg:
+            st.write(f"### 📦 ניהול בלוקים: {f_file.name}")
             block_configs = []
             for i, (v_key, v_block) in enumerate(visual_blocks.items()):
                 z_vals = sorted(list(set(p['z'] for p in v_block['paths'])), reverse=True)
                 with st.expander(f"{v_block['t_cnc']} | {len(v_block['paths'])} יח'"):
-                    active = st.checkbox("כלול", value=True, key=f"act_{i}")
-                    f_z = [st.number_input(f"Z פסיעה (MPR: {z})", value=float(z), key=f"z_{i}_{zi}") for zi, z in enumerate(z_vals)]
+                    active = st.checkbox("כלול בייצור", value=True, key=f"act_{i}")
+                    f_z = [st.number_input(f"עומק פסיעה {zi+1} (MPR: {z})", value=float(z), key=f"z_{i}_{zi}") for zi, z in enumerate(z_vals)]
                     block_configs.append({'id': i, 'active': active, 'passes': f_z, 'orig_z': z_vals, 'v_block': v_block})
             order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']])
 
-        # --- ייצור NC (Production 50.6) ---
-        nc = ["%", "(DARWISH 50.6 - PRODUCTION MASTER)", "N10 G90 G54 G21 G17"]; n_c = 20
+        # --- ייצור NC (Production Master 50.6) ---
+        nc = ["%", "(DARWISH 50.6 - PRODUCTION MASTER)", f"N10 G90 G54 G21 G17"]; n_c = 20
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
             nc.extend([f"N{n_c} M05", f"N{n_c+5} {v_block['t_cnc']} M06", f"N{n_c+10} G43 H{v_block['t_cnc'][1:]}", f"N{n_c+15} S{int(v_block['s'])} M03"]); n_c += 20
             for it in v_block['paths']:
-                # Apply Z-Offset logic: Positive = deeper (closer to table)
+                # Z Calculation with Tool Offset: Positive Offset = deeper
                 zv_final = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz
                 path = calculate_path_v506(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                 for pi, p in enumerate(path):
                     if pi == 0:
-                        nc.append(f"N{n_c} G00 X{p[0]+off_x-(0 if it['is_pocket'] else ramp_len_global):.3f} Y{p[1]+off_y:.3f}"); n_c += 5
+                        # Vertical Plunge for pockets, Ramp for routing
+                        ramp = 0 if it['is_pocket'] else ramp_len_global
+                        nc.append(f"N{n_c} G00 X{p[0]+off_x-ramp:.3f} Y{p[1]+off_y:.3f}"); n_c += 5
                         nc.append(f"N{n_c} G01 Z{zv_final:.3f} X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F1500"); n_c += 5
                     else: nc.append(f"N{n_c} G01 X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F{int(it['f'])}"); n_c += 5
                 nc.append(f"N{n_c} G00 Z{safety_h:.3f}"); n_c += 5
         nc.extend([f"N{n_c} M30", "%"])
-        st.download_button(f"📥 הורד NC 50.6", "\n".join(nc), f"{f_file.name}.nc")
+        st.download_button(f"📥 הורד NC (גרסה 50.6)", "\n".join(nc), f"{f_file.name}.nc")
 
         with col_vis:
-            fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
+            fig = go.Figure(); 
+            fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
+            # Restore Worktable and Board shapes
+            fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="Gray", width=2), fillcolor="rgba(128,128,128,0.1)")
+            fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=wp_w+off_x, y1=wp_l+off_y, line=dict(color="Sienna", width=3), fillcolor="rgba(139, 69, 19, 0.4)")
+            
             for b_id in order:
                 b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
                 for it in v_block['paths']:
+                    # Tooltip with corrected Z values
                     zv_f = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz
-                    h_text = f"<b>{v_block['t_cnc']}</b>: {v_block['desc']}<br>EA: {it['ea']}<br>רדיוס צידוד: {it['rad']} מילימטר<br>Z סופי: {zv_f:.3f} מילימטר"
-                    s_p = calculate_path_v506(it['pts'], it['rad'], it['rk'], it['is_pocket'])
-                    px = [p[0]+off_x for p in s_p] + [None]; py = [p[1]+off_y for p in s_p] + [None]
-                    fig.add_trace(go.Scatter(x=px, y=py, mode='lines', line=dict(color="yellow", dash="dash"), hoverinfo="text", text=h_text, showlegend=False))
-            st.plotly_chart(fig, use_container_width=True)
+                    h_text = f"<b>{v_block['t_cnc']}</b>: {v_block['desc']}<br>EA: {it['ea']}<br>קוטר בשימוש: {it['diam']} מ\"מ<br>Z סופי (כולל תיקון): {zv_f:.3f} מ\"מ"
+                    
+                    ox, oy = zip(*it['pts']); color = "green" if v_block['is_dr'] else ("red" if any(z <= 0.2 for z in b_cfg['passes']) else "blue")
+                    if v_block['is_dr']:
+                        fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', marker=dict(size=it['diam'], color=color), hoverinfo="text", text=h_text, showlegend=False))
+                    else:
+                        fig.add_trace(go.Scatter(x=[x+off_x for x in ox]+[ox[0]+off_x], y=[y+off_y for y in oy]+[oy[0]+off_y], mode='lines', line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
+                        s_p = calculate_path_v506(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                        px = [p[0]+off_x for p in s_p] + [None]; py = [p[1]+off_y for p in s_p] + [None]
+                        fig.add_trace(go.Scatter(x=px, y=py, mode='lines', line=dict(color="yellow", dash="dash"), hoverinfo="text", text=h_text, showlegend=False))
+            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
