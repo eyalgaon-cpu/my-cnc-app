@@ -4,9 +4,9 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 50.9 - THE SYNCHRONIZED ROTATION MASTER
-# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 50.8 עם תיקון סיבוב לקדחים ונקודות חופשיות.
-st.set_page_config(page_title="Darwish 50.9 Production", layout="wide")
+# Darwish 51.0 - THE PRECISION PRODUCTION MASTER
+# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 50.9 עם תיקון צלילה, בידוד Z, ותמיכה ב-112.
+st.set_page_config(page_title="Darwish 51.0 Precision", layout="wide")
 
 # --- 1. ניהול הגדרות ופרופיל (Persistence) ---
 def export_config():
@@ -27,16 +27,16 @@ def import_config(uploaded_file):
         return True
     return False
 
-# --- 2. מסד כלים מורחב (Industrial DB) ---
+# --- 2. מסד כלים מורחב (Industrial DB - Brandshield Optimized) ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
-        {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "כרסום 40 מילימטר", "קוטר": 40.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 4000},
+        {"T_CNC": "T1", "MPR_Name": "130", "תיאור": "כרסום 40 מילימטר", "קוטר": 40.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 4000},
         {"T_CNC": "T2", "MPR_Name": "142", "תיאור": "כרסום יהלום 6 מילימטר", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4500},
         {"T_CNC": "T3", "MPR_Name": "158", "תיאור": "כרסום 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3000},
         {"T_CNC": "T4", "MPR_Name": "128", "תיאור": "כרסום 12 מילימטר", "קוטר": 12.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3500},
         {"T_CNC": "T6", "MPR_Name": "35", "תיאור": "מקדח צירים 35 מילימטר", "קוטר": 35.0, "Z_Offset": 0.0, "RPM": 3000, "Feed": 1000},
-        {"T_CNC": "T8", "MPR_Name": "19.0", "תיאור": "כרסום 19 מילימטר", "קוטר": 19.0, "Z_Offset": 0.0, "RPM": 16000, "Feed": 3000},
-        {"T_CNC": "T10", "MPR_Name": "6.0", "תיאור": "כרסום/מקדח 6 מילימטר", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2000},
+        {"T_CNC": "T8", "MPR_Name": "136", "תיאור": "כרסום/מקדח 136", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 16000, "Feed": 3000},
+        {"T_CNC": "T10", "MPR_Name": "139", "תיאור": "כרסום/מקדח 139", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2000},
         {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "כרסום 3 מילימטר (T11)", "קוטר": 3.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2500},
         {"T_CNC": "T44", "MPR_Name": "5.0", "תיאור": "מקדח 5 מילימטר", "קוטר": 5.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
         {"T_CNC": "T47", "MPR_Name": "8.0", "תיאור": "מקדח 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
@@ -49,7 +49,7 @@ with st.sidebar:
         cfg_file = st.file_uploader("טען פרופיל (JSON)", type=['json'])
         if cfg_file:
             if import_config(cfg_file): st.success("פרופיל נטען בהצלחה")
-        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v509")
+        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v510")
         st.download_button("שמור פרופיל נוכחי", export_config(), "darwish_config.json")
 
     st.divider()
@@ -58,7 +58,7 @@ with st.sidebar:
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
     gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
 
-# --- 3. ליבה מתמטית v50.9 (Isolated Inset Engine) ---
+# --- 3. ליבה מתמטית v51.0 (Preserved Inset Engine) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
@@ -71,7 +71,7 @@ def find_tool_numeric(mpr_id, df):
     except: pass
     return df[df['T_CNC'] == "T2"].iloc[0]
 
-def calculate_path_v509(pts, r, mpr_rk, is_pocket=False):
+def calculate_path_v510(pts, r, mpr_rk, is_pocket=False):
     if r <= 0 or len(pts) < 2: return pts
     pts_arr = np.array(pts); n = len(pts_arr)
     area = sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0
@@ -125,7 +125,7 @@ def get_f(key, block, default=0.0):
     return _safe_float(m.group(1)) if m else default
 
 # --- 4. ממשק הפקה והדמיה ---
-st.title("🏭 דרוויש 50.9 - THE SYNCHRONIZED ROTATION MASTER")
+st.title("🏭 דרוויש 51.0 - THE PRECISION PRODUCTION MASTER")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
@@ -153,13 +153,13 @@ if upl:
             if pts: geos[parts[i]] = pts
 
         ops = []
-        for m in re.finditer(r'<(102|105|130|181)(.*?)(?=<|\!|\[H)', mpr, re.DOTALL):
+        for m in re.finditer(r'<(102|105|112|130|181)(.*?)(?=<|\!|\[H)', mpr, re.DOTALL):
             tag, bc = m.group(1), m.group(2)
             t_mpr = re.search(r'(?:TNO|T_|DU)="?([^"\\s]+)"?', bc).group(1).strip() if re.search(r'(?:TNO|T_|DU)="?([^"\\s]+)"?', bc) else "142"
             t_info = find_tool_numeric(t_mpr, st.session_state.tool_db)
-            z_abs = round((thick - get_f('TI', bc)), 3) if tag in ['102', '181'] else round(get_f('ZA', bc), 3)
+            z_abs = round((thick - get_f('TI', bc)), 3) if tag in ['102', '181', '112'] else round(get_f('ZA', bc), 3)
 
-            # SURGICAL FIX: Synchronized Point Rotation for Drills and FREE points
+            # SURGICAL: Handle Drill Patterns (102)
             if tag == '102':
                 xa, ya = get_f('XA', bc), get_f('YA', bc)
                 an, ab = int(get_f('AN', bc, 1)), get_f('AB', bc, 0.0)
@@ -172,6 +172,20 @@ if upl:
                         'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 
                         'type': tag, 'ea': f"DR_{tag}_{round(curr_xa,1)}", 'rk': "WRKL", 'is_pocket': False
                     })
+            # SURGICAL: Handle Rectangular Pockets (112)
+            elif tag == '112':
+                xa, ya = get_f('XA', bc), get_f('YA', bc)
+                la, br = get_f('LA', bc), get_f('BR', bc)
+                wi = get_f('WI', bc)
+                # Generate 4-point rectangle geometry
+                pts_rect = [[xa, ya], [xa+la, ya], [xa+la, ya+br], [xa, ya+br], [xa, ya]]
+                if rotate: f_pts = [[wp_w - p[1], p[0]] for p in pts_rect]
+                else: f_pts = pts_rect
+                ops.append({
+                    't_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'z_off': t_info['Z_Offset'], 
+                    'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 
+                    'type': tag, 'ea': "TASCHE", 'rk': "WRKL", 'is_pocket': True
+                })
             else:
                 geoid = re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE"
                 raw_pts = geos.get(geoid)
@@ -205,22 +219,24 @@ if upl:
             
             order = st.multiselect("סדר עבודה:", options=[i for i, b in enumerate(block_configs) if b['active']], default=[i for i, b in enumerate(block_configs) if b['active']], format_func=lambda x: f"{block_configs[x]['v_block']['t_cnc']} ({block_configs[x]['v_block']['desc']})")
 
-        nc = ["%", "(DARWISH 50.9 - SYNCHRONIZED MASTER)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        # --- ייצור NC (Production Master 51.0) ---
+        nc = ["%", "(DARWISH 51.0 - PRECISION MASTER)", f"N10 G90 G54 G21 G17"]; n_c = 20
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
             nc.extend([f"N{n_c} M05", f"N{n_c+5} {v_block['t_cnc']} M06", f"N{n_c+10} G43 H{v_block['t_cnc'][1:]}", f"N{n_c+15} S{int(v_block['s'])} M03"]); n_c += 20
             for it in v_block['paths']:
                 zv_final = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz
-                path = calculate_path_v509(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                path = calculate_path_v510(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                 for pi, p in enumerate(path):
                     if pi == 0:
-                        ramp = 0 if it['is_pocket'] else ramp_len_global
+                        # PRECISION: Vertical Plunge for Drills (102), Ramp for Routing
+                        ramp = 0 if (it['is_pocket'] or it['type'] == '102') else ramp_len_global
                         nc.append(f"N{n_c} G00 X{p[0]+off_x-ramp:.3f} Y{p[1]+off_y:.3f}"); n_c += 5
                         nc.append(f"N{n_c} G01 Z{zv_final:.3f} X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F1500"); n_c += 5
                     else: nc.append(f"N{n_c} G01 X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F{int(it['f'])}"); n_c += 5
                 nc.append(f"N{n_c} G00 Z{safety_h:.3f}"); n_c += 5
         nc.extend([f"N{n_c} M30", "%"])
-        with col_cfg: st.download_button(f"📥 הורד NC (גרסה 50.9)", "\n".join(nc), f"{f_file.name}.nc")
+        with col_cfg: st.download_button(f"📥 הורד NC (גרסה 51.0)", "\n".join(nc), f"{f_file.name}.nc")
 
         with col_vis:
             fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
@@ -229,14 +245,15 @@ if upl:
             for b_id in order:
                 b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
                 for it in v_block['paths']:
-                    p_steps = "<br>".join([f"• פסיעה {idx+1}: {z_val - it['z_off'] + gz:.3f} מילימטר" for idx, z_val in enumerate(b_cfg['passes'])])
-                    h_text = f"<b>{v_block['t_cnc']}</b>: {v_block['desc']}<br>EA: {it['ea']}<br>קוטר: {it['diam']} מ\"מ<br><b>עומקי פסיעה (Z סופי):</b><br>{p_steps}"
+                    # ISOLATED Z HOVER: Show only the current path's calculated Z
+                    zv_calc = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz
+                    h_text = f"<b>{v_block['t_cnc']}</b>: {v_block['desc']}<br>EA: {it['ea']}<br>קוטר: {it['diam']} מ\"מ<br>Z סופי: {zv_calc:.3f} מילימטר"
                     ox, oy = zip(*it['pts']); color = "green" if v_block['is_dr'] else ("red" if any(z <= 0.2 for z in b_cfg['passes']) else "blue")
                     if v_block['is_dr']:
                         fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers', marker=dict(size=it['diam'], color=color), hoverinfo="text", text=h_text, showlegend=False))
                     else:
                         fig.add_trace(go.Scatter(x=[x+off_x for x in ox]+[ox[0]+off_x], y=[y+off_y for y in oy]+[oy[0]+off_y], mode='lines', line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
-                        s_p = calculate_path_v509(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                        s_p = calculate_path_v510(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                         px = [p[0]+off_x for p in s_p] + [None]; py = [p[1]+off_y for p in s_p] + [None]
                         fig.add_trace(go.Scatter(x=px, y=py, mode='lines', line=dict(color="yellow", dash="dash"), hoverinfo="text", text=h_text, showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
