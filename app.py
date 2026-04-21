@@ -1,15 +1,17 @@
 import streamlit as st
-import re, math, json
+import re, math, json, os
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 51.6 - THE SEQUENCE MASTER (FULL RECONSTRUCTION)
-# חוק יסוד: איסור מוחלט על צמצום קוד. שחזור מלא של 51.5 בתוספת מנוע עדיפות נומרי.
-st.set_page_config(page_title="Darwish 51.6 Precision", layout="wide")
+# Darwish 51.7 - THE LOCAL SYNC
+# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 51.6 עם סנכרון אוטומטי לקובץ מקומי.
+st.set_page_config(page_title="Darwish 51.7 Local", layout="wide")
 
-# --- 1. ניהול הגדרות ופרופיל (Persistence) ---
-def export_config():
+CONFIG_FILE = "darwish_config.json"
+
+# --- 1. מנוע סנכרון מקומי (Persistence Engine) ---
+def save_config_auto():
     cfg = {
         "tool_db": st.session_state.tool_db.to_dict('records'),
         "safety_h": st.session_state.get('safety_h', 35.0),
@@ -17,54 +19,72 @@ def export_config():
         "off_y": st.session_state.get('off_y', 0.0),
         "gz": st.session_state.get('gz', 0.0)
     }
-    return json.dumps(cfg, indent=4)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4, ensure_ascii=False)
 
-def import_config(uploaded_file):
-    if uploaded_file:
-        cfg = json.load(uploaded_file)
-        st.session_state.tool_db = pd.DataFrame(cfg["tool_db"])
-        st.session_state.safety_h = cfg["safety_h"]
-        return True
+def load_config_auto():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+            st.session_state.tool_db = pd.DataFrame(cfg["tool_db"])
+            st.session_state.safety_h = cfg.get("safety_h", 35.0)
+            st.session_state.off_x = cfg.get("off_x", 0.0)
+            st.session_state.off_y = cfg.get("off_y", 0.0)
+            st.session_state.gz = cfg.get("gz", 0.0)
+            return True
     return False
 
-# --- 2. מסד כלים מורחב (Industrial DB - Synced T1/T13) ---
+# --- 2. אתחול מסד כלים (Baseline Setup) ---
 if 'tool_db' not in st.session_state:
-    st.session_state.tool_db = pd.DataFrame([
-        {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "כרסום 40 מילימטר (ניקוי שולחן)", "קוטר": 40.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 4000},
-        {"T_CNC": "T2", "MPR_Name": "142", "תיאור": "כרסום יהלום 6 מילימטר", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4500},
-        {"T_CNC": "T3", "MPR_Name": "158", "תיאור": "כרסום 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3000},
-        {"T_CNC": "T4", "MPR_Name": "128", "תיאור": "כרסום 12 מילימטר", "קוטר": 12.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3500},
-        {"T_CNC": "T6", "MPR_Name": "35", "תיאור": "מקדח צירים 35 מילימטר", "קוטר": 35.0, "Z_Offset": 0.0, "RPM": 3000, "Feed": 1000},
-        {"T_CNC": "T8", "MPR_Name": "136", "תיאור": "כרסום/מקדח 136", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 16000, "Feed": 3000},
-        {"T_CNC": "T10", "MPR_Name": "139", "תיאור": "כרסום/מקדח 139", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2000},
-        {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "כרסום 3 מילימטר (T11)", "קוטר": 3.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2500},
-        {"T_CNC": "T13", "MPR_Name": "130", "תיאור": "כרסום V 45 מעלות (גירונג)", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4000},
-        {"T_CNC": "T44", "MPR_Name": "5.0", "תיאור": "מקדח 5 מילימטר", "קוטר": 5.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
-        {"T_CNC": "T47", "MPR_Name": "8.0", "תיאור": "מקדח 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
-        {"T_CNC": "T49", "MPR_Name": "15.0", "תיאור": "מקדח 15 מילימטר", "קוטר": 15.0, "Z_Offset": 0.0, "RPM": 3000, "Feed": 800}
-    ])
+    if not load_config_auto():
+        st.session_state.tool_db = pd.DataFrame([
+            {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "כרסום 40 מילימטר (ניקוי שולחן)", "קוטר": 40.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 4000},
+            {"T_CNC": "T2", "MPR_Name": "142", "תיאור": "כרסום יהלום 6 מילימטר", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4500},
+            {"T_CNC": "T3", "MPR_Name": "158", "תיאור": "כרסום 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3000},
+            {"T_CNC": "T4", "MPR_Name": "128", "תיאור": "כרסום 12 מילימטר", "קוטר": 12.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3500},
+            {"T_CNC": "T6", "MPR_Name": "35", "תיאור": "מקדח צירים 35 מילימטר", "קוטר": 35.0, "Z_Offset": 0.0, "RPM": 3000, "Feed": 1000},
+            {"T_CNC": "T8", "MPR_Name": "136", "תיאור": "כרסום/מקדח 136", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 16000, "Feed": 3000},
+            {"T_CNC": "T10", "MPR_Name": "139", "תיאור": "כרסום/מקדח 139", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2000},
+            {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "כרסום 3 מילימטר (T11)", "קוטר": 3.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2500},
+            {"T_CNC": "T13", "MPR_Name": "130", "תיאור": "כרסום V 45 מעלות (גירונג)", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4000},
+            {"T_CNC": "MISSING", "MPR_Name": "134", "תיאור": "כרסום 10 מילימטר (חסר פיזית)", "קוטר": 10.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3000},
+            {"T_CNC": "T44", "MPR_Name": "5.0", "תיאור": "מקדח 5 מילימטר", "קוטר": 5.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
+            {"T_CNC": "T47", "MPR_Name": "8.0", "תיאור": "מקדח 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
+            {"T_CNC": "T49", "MPR_Name": "15.0", "תיאור": "מקדח 15 מילימטר", "קוטר": 15.0, "Z_Offset": 0.0, "RPM": 3000, "Feed": 800}
+        ])
 
 with st.sidebar:
-    st.header("🛠️ ניהול ייצור")
+    st.header("🛠️ ניהול ייצור (Local Sync)")
     with st.expander("פרופיל מכונה וכלים", expanded=True):
-        cfg_file = st.file_uploader("טען פרופיל (JSON)", type=['json'])
-        if cfg_file:
-            if import_config(cfg_file): st.success("פרופיל נטען בהצלחה")
-        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v516")
-        st.download_button("שמור פרופיל נוכחי", export_config(), "darwish_config.json")
+        new_df = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v517")
+        if not new_df.equals(st.session_state.tool_db):
+            st.session_state.tool_db = new_df
+            save_config_auto()
+        if st.button("אפס להגדרות יצרן"):
+            if os.path.exists(CONFIG_FILE): os.remove(CONFIG_FILE)
+            st.rerun()
 
     st.divider()
-    safety_h = st.number_input("גובה בטיחות Z (מילימטר)", value=st.session_state.get('safety_h', 35.0))
-    off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=0.0)
-    off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=0.0)
-    gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=0.0)
+    safety_h = st.number_input("גובה בטיחות Z (מילימטר)", value=st.session_state.get('safety_h', 35.0), key='safety_h_in')
+    off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=st.session_state.get('off_x', 0.0), key='off_x_in')
+    off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=st.session_state.get('off_y', 0.0), key='off_y_in')
+    gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=st.session_state.get('gz', 0.0), key='gz_in')
 
-# --- 3. ליבה מתמטית v51.6 (Full Math Suite) ---
+    # Auto-save changes in sidebar
+    if (safety_h != st.session_state.get('safety_h') or off_x != st.session_state.get('off_x') or 
+        off_y != st.session_state.get('off_y') or gz != st.session_state.get('gz')):
+        st.session_state.safety_h = safety_h
+        st.session_state.off_x = off_x
+        st.session_state.off_y = off_y
+        st.session_state.gz = gz
+        save_config_auto()
+
+# --- 3. ליבה מתמטית v51.7 (Sequence Master) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
 
-def rotate_pt_v516(x, y, angle_deg):
+def rotate_pt_v517(x, y, angle_deg):
     rad = math.radians(angle_deg)
     return x * math.cos(rad) - y * math.sin(rad), x * math.sin(rad) + y * math.cos(rad)
 
@@ -72,11 +92,13 @@ def find_tool_numeric(mpr_id, df):
     try:
         target = round(_safe_float(mpr_id), 1)
         for _, row in df.iterrows():
-            if round(_safe_float(row['MPR_Name']), 1) == target: return row, False
+            if round(_safe_float(row['MPR_Name']), 1) == target:
+                is_missing = (row['T_CNC'] == "MISSING")
+                return row, is_missing
     except: pass
     return {"T_CNC": "MISSING", "תיאור": f"כלי {mpr_id} לא מזוהה בטבלה", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 2000}, True
 
-def optimize_drill_path_v516(ops):
+def optimize_drill_path_v517(ops):
     if not ops: return ops
     optimized = [ops.pop(0)]
     while ops:
@@ -85,7 +107,7 @@ def optimize_drill_path_v516(ops):
         optimized.append(ops.pop(next_idx))
     return optimized
 
-def calculate_path_v516(pts, r, mpr_rk, is_pocket=False):
+def calculate_path_v517(pts, r, mpr_rk, is_pocket=False):
     if r <= 0 or len(pts) < 2: return pts
     pts_arr = np.array(pts); n = len(pts_arr)
     area = sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0
@@ -138,7 +160,7 @@ def get_f(key, block, default=0.0):
     return _safe_float(m.group(1)) if m else default
 
 # --- 4. ממשק הפקה והדמיה ---
-st.title("🏭 דרוויש 51.6 - THE SEQUENCE MASTER")
+st.title("🏭 דרוויש 51.7 - THE LOCAL SYNC")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
@@ -177,7 +199,7 @@ if upl:
             elif tag == '112':
                 xa, ya, la, br, wi = get_f('XA', bc), get_f('YA', bc), get_f('LA', bc), get_f('BR', bc), get_f('WI', bc)
                 rect_local = [(-la/2, -br/2), (la/2, -br/2), (la/2, br/2), (-la/2, br/2), (-la/2, -br/2)]
-                f_pts = [[wp_w - (rotate_pt_v516(px, py, wi)[1] + ya), rotate_pt_v516(px, py, wi)[0] + xa] if rotate else [rotate_pt_v516(px, py, wi)[0] + xa, rotate_pt_v516(px, py, wi)[1] + ya] for px, py in rect_local]
+                f_pts = [[wp_w - (rotate_pt_v517(px, py, wi)[1] + ya), rotate_pt_v517(px, py, wi)[0] + xa] if rotate else [rotate_pt_v517(px, py, wi)[0] + xa, rotate_pt_v517(px, py, wi)[1] + ya] for px, py in rect_local]
                 ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': ti_val, 'z_off': t_info['Z_Offset'], 'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': "TASCHE", 'rk': "WRKL", 'is_pocket': True, 'missing': is_missing})
             else:
                 geoid = re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE"
@@ -190,7 +212,7 @@ if upl:
             if v_key not in visual_blocks: visual_blocks[v_key] = {'t_cnc': op['t_cnc'], 'desc': op['desc'], 'type': op['type'], 'is_dr': op['type'] == '102', 'paths': [], 's': op['s'], 'f': op['f'], 'diam': op['diam'], 'ea_id': op['ea'], 'missing': op['missing']}
             visual_blocks[v_key]['paths'].append(op)
         for vk in visual_blocks:
-            if visual_blocks[vk]['is_dr']: visual_blocks[vk]['paths'] = optimize_drill_path_v516(visual_blocks[vk]['paths'])
+            if visual_blocks[vk]['is_dr']: visual_blocks[vk]['paths'] = optimize_drill_path_v517(visual_blocks[vk]['paths'])
 
         with col_cfg:
             st.write(f"### 📦 ניהול בלוקים: {f_file.name}")
@@ -199,46 +221,46 @@ if upl:
                 z_vals = sorted(list(set(p['z'] for p in v_block['paths'])), reverse=True); is_sep_val = any(z < 0.2 for z in z_vals)
                 def_idx = 100 + (i*10) if is_sep_val else 10 + (i*10)
                 
-                with (st.error(f"❌ {v_block['t_cnc']} | {v_block['desc']}") if v_block['missing'] else st.expander(f"{v_block['t_cnc']} | {v_block['desc']} (EA:{v_block['ea_id']})")):
+                with (st.error(f"❌ {v_block['t_cnc']} | {v_block['desc']} (חסר במכונה)") if v_block['missing'] else st.expander(f"{v_block['t_cnc']} | {v_block['desc']} (EA:{v_block['ea_id']})")):
                     active = st.checkbox("כלול בייצור", value=not v_block['missing'], key=f"act_{i}")
                     order_idx = st.number_input("סדר ביצוע", value=def_idx, key=f"idx_{i}")
                     f_z = [st.number_input(f"גובה Z {zi+1}", value=float(z), key=f"z_{i}_{zi}") for zi, z in enumerate(z_vals)]
                     block_configs.append({'id': i, 'active': active, 'order_idx': order_idx, 'passes': f_z, 'orig_z': z_vals, 'v_block': v_block, 'is_sep': is_sep_val})
 
-            sorted_ids = [b['id'] for b in sorted([bc for bc in block_configs if bc['active']], key=lambda x: x['order_idx'])]
-            order = st.multiselect("סדר עבודה:", options=[b['id'] for b in block_configs if b['active']], default=sorted_ids, format_func=lambda x: f"[{block_configs[x]['order_idx']}] {block_configs[x]['v_block']['t_cnc']} - {block_configs[x]['v_block']['ea_id']}")
+            sorted_blocks = sorted([bc for bc in block_configs if bc['active']], key=lambda x: x['order_idx'])
+            order = st.multiselect("סדר עבודה:", options=[b['id'] for b in block_configs if b['active']], default=[b['id'] for b in sorted_blocks], format_func=lambda x: f"[{block_configs[x]['order_idx']}] {block_configs[x]['v_block']['t_cnc']} - {block_configs[x]['v_block']['ea_id']}")
 
-        # --- ייצור NC (Production Master 51.6 Full) ---
-        nc = ["%", "(DARWISH 51.6 - SEQUENCE MASTER)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        # --- ייצור NC (Production Master 51.7) ---
+        nc = ["%", "(DARWISH 51.7 - LOCAL SYNC)", f"N10 G90 G54 G21 G17"]; n_c = 20
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
             nc.extend([f"N{n_c} M05", f"N{n_c+5} {v_block['t_cnc']} M06", f"N{n_c+10} G43 H{v_block['t_cnc'][1:] if v_block['t_cnc'] != 'MISSING' else '101'}", f"N{n_c+15} S{int(v_block['s'])} M03"]); n_c += 20
             for it in v_block['paths']:
-                zv_final = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz
-                path = calculate_path_v516(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                zv_final = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + st.session_state.gz
+                path = calculate_path_v517(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                 for pi, p in enumerate(path):
                     if pi == 0:
                         ramp = 0 if (it['is_pocket'] or it['type'] == '102') else ramp_len_global
-                        nc.append(f"N{n_c} G00 X{p[0]+off_x-ramp:.3f} Y{p[1]+off_y:.3f}"); n_c += 5
-                        nc.append(f"N{n_c} G01 Z{zv_final:.3f} X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F1500"); n_c += 5
-                    else: nc.append(f"N{n_c} G01 X{p[0]+off_x:.3f} Y{p[1]+off_y:.3f} F{int(it['f'])}"); n_c += 5
-                nc.append(f"N{n_c} G00 Z{safety_h:.3f}"); n_c += 5
+                        nc.append(f"N{n_c} G00 X{p[0]+st.session_state.off_x-ramp:.3f} Y{p[1]+st.session_state.off_y:.3f}"); n_c += 5
+                        nc.append(f"N{n_c} G01 Z{zv_final:.3f} X{p[0]+st.session_state.off_x:.3f} Y{p[1]+st.session_state.off_y:.3f} F1500"); n_c += 5
+                    else: nc.append(f"N{n_c} G01 X{p[0]+st.session_state.off_x:.3f} Y{p[1]+st.session_state.off_y:.3f} F{int(it['f'])}"); n_c += 5
+                nc.append(f"N{n_c} G00 Z{st.session_state.safety_h:.3f}"); n_c += 5
         nc.extend([f"N{n_c} M30", "%"])
-        with col_cfg: st.download_button(f"📥 הורד NC (גרסה 51.6)", "\n".join(nc), f"{f_file.name}.nc")
+        with col_cfg: st.download_button(f"📥 הורד NC (גרסה 51.7)", "\n".join(nc), f"{f_file.name}.nc")
 
         with col_vis:
             fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
             fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="Gray", width=2), fillcolor="rgba(128,128,128,0.1)")
-            fig.add_shape(type="rect", x0=off_x, y0=off_y, x1=wp_w+off_x, y1=wp_l+off_y, line=dict(color="Sienna", width=3), fillcolor="rgba(139, 69, 19, 0.4)")
+            fig.add_shape(type="rect", x0=st.session_state.off_x, y0=st.session_state.off_y, x1=wp_w+st.session_state.off_x, y1=wp_l+st.session_state.off_y, line=dict(color="Sienna", width=3), fillcolor="rgba(139, 69, 19, 0.4)")
             for b_id in order:
                 b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
                 for it in v_block['paths']:
-                    zv_calc = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + gz; ti_calc = round(thick - zv_calc, 3)
+                    zv_calc = b_cfg['passes'][b_cfg['orig_z'].index(it['z'])] - it['z_off'] + st.session_state.gz; ti_calc = round(thick - zv_calc, 3)
                     h_text = f"<b>{v_block['t_cnc']}</b>: {v_block['desc']}<br>EA: {it['ea']}<br>קוטר: {it['diam']} מ\"מ<br>Z סופי: {zv_calc:.3f} מילימטר<br>TI: {ti_calc:.3f} מילימטר"
                     ox, oy = zip(*it['pts']); color = "red" if v_block['missing'] else ("green" if v_block['is_dr'] else ("red" if b_cfg['is_sep'] else "blue"))
-                    if v_block['is_dr']: fig.add_trace(go.Scatter(x=[x+off_x for x in ox], y=[y+off_y for y in oy], mode='markers+lines', marker=dict(size=it['diam'], color=color), line=dict(width=1, dash='dot'), hoverinfo="text", text=h_text, showlegend=False))
+                    if v_block['is_dr']: fig.add_trace(go.Scatter(x=[x+st.session_state.off_x for x in ox], y=[y+st.session_state.off_y for y in oy], mode='markers+lines', marker=dict(size=it['diam'], color=color), line=dict(width=1, dash='dot'), hoverinfo="text", text=h_text, showlegend=False))
                     else:
-                        fig.add_trace(go.Scatter(x=[x+off_x for x in ox]+[ox[0]+off_x], y=[y+off_y for y in oy]+[oy[0]+off_y], mode='lines', line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
-                        s_p = calculate_path_v516(it['pts'], it['rad'], it['rk'], it['is_pocket'])
-                        fig.add_trace(go.Scatter(x=[p[0]+off_x for p in s_p]+[None], y=[p[1]+off_y for p in s_p]+[None], mode='lines', line=dict(color="yellow", dash="dash"), hoverinfo="text", text=h_text, showlegend=False))
+                        fig.add_trace(go.Scatter(x=[x+st.session_state.off_x for x in ox]+[ox[0]+st.session_state.off_x], y=[y+st.session_state.off_y for y in oy]+[oy[0]+st.session_state.off_y], mode='lines', line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
+                        s_p = calculate_path_v517(it['pts'], it['rad'], it['rk'], it['is_pocket'])
+                        fig.add_trace(go.Scatter(x=[p[0]+st.session_state.off_x for p in s_p]+[None], y=[p[1]+st.session_state.off_y for p in s_p]+[None], mode='lines', line=dict(color="yellow", dash="dash"), hoverinfo="text", text=h_text, showlegend=False))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
