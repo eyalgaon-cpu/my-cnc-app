@@ -4,9 +4,9 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 51.8 - THE CONTINUITY SYNC (FULL INTEGRITY)
-# חוק יסוד: איסור מוחלט על צמצום קוד. פנייה לאייל בלשון זכר.
-st.set_page_config(page_title="Darwish 51.8 Local", layout="wide")
+# Darwish 51.9 - VECTOR ALIGNED 3D RAMP (FULL INTEGRITY)
+# חוק יסוד: איסור מוחלט על צמצום קוד.
+st.set_page_config(page_title="Darwish 51.9 Local", layout="wide")
 
 CONFIG_FILE = "darwish_config.json"
 
@@ -34,7 +34,7 @@ def load_config_auto():
             return True
     return False
 
-# --- 2. אתחול מסד כלים (מעודכן לפי ייצוא 51.8) ---
+# --- 2. אתחול מסד כלים (מעודכן לפי ייצוא 51.9) ---
 if 'tool_db' not in st.session_state:
     if not load_config_auto():
         st.session_state.tool_db = pd.DataFrame([
@@ -53,10 +53,10 @@ if 'tool_db' not in st.session_state:
 with st.sidebar:
     st.header("🛠️ ניהול ייצור (Local Sync)")
     with st.expander("פרופיל מכונה וכלים", expanded=True):
-        new_df = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v518")
+        new_df = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v519")
         if not new_df.equals(st.session_state.tool_db):
             st.session_state.tool_db = new_df
-            save_config_auto()
+        save_config_auto()
         if st.button("אפס להגדרות יצרן"):
             if os.path.exists(CONFIG_FILE): os.remove(CONFIG_FILE)
             st.rerun()
@@ -75,7 +75,7 @@ with st.sidebar:
         st.session_state.gz = gz
         save_config_auto()
 
-# --- 3. ליבה מתמטית v51.8 (Sequence Master) ---
+# --- 3. ליבה מתמטית v51.9 (Sequence Master) ---
 def _safe_float(val):
     try: return float(re.sub(r'[^0-9.\-]', '', str(val)))
     except: return 0.0
@@ -156,7 +156,7 @@ def get_f(key, block, default=0.0):
     return _safe_float(m.group(1)) if m else default
 
 # --- 4. ממשק הפקה והדמיה ---
-st.title("🏭 דרוויש 51.8 - THE CONTINUITY SYNC")
+st.title("🏭 דרוויש 51.9 - VECTOR ALIGNED RAMP")
 col_cfg, col_vis = st.columns([1, 2])
 
 with col_cfg:
@@ -225,14 +225,12 @@ if upl:
             sorted_blocks = sorted([bc for bc in block_configs if bc['active']], key=lambda x: x['order_idx'])
             order = st.multiselect("סדר עבודה:", options=[b['id'] for b in block_configs if b['active']], default=[b['id'] for b in sorted_blocks], format_func=lambda x: f"[{block_configs[x]['order_idx']}] {block_configs[x]['v_block']['t_cnc']} - {block_configs[x]['v_block']['ea_id']}")
 
-        # --- ייצור NC (Production Master 51.8 - Continuity Upgrade) ---
-        nc = ["%", "(DARWISH 51.8 - CONTINUITY SYNC)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        # --- ייצור NC (Production Master 51.9 - Vector Aligned Ramp Upgrade) ---
+        nc = ["%", "(DARWISH 51.9 - VECTOR ALIGNED RAMP)", f"N10 G90 G54 G21 G17"]; n_c = 20
         last_tool_id = None
         
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
-            
-            # בדיקת רציפות כלי למניעת עצירות M05/M06 מיותרות
             if v_block['t_cnc'] != last_tool_id:
                 if last_tool_id is not None:
                     nc.append(f"N{n_c} M05"); n_c += 5
@@ -243,16 +241,29 @@ if upl:
                 path = calculate_path_v518(it['pts'], it['rad'], it['rk'], it['is_pocket'])
                 for pi, p in enumerate(path):
                     if pi == 0:
-                        ramp = 0 if (it['is_pocket'] or it['type'] == '102') else ramp_len_global
-                        nc.append(f"N{n_c} G00 X{p[0]+st.session_state.off_x-ramp:.3f} Y{p[1]+st.session_state.off_y:.3f} Z{st.session_state.safety_h:.3f}"); n_c += 5
-                        nc.append(f"N{n_c} G01 Z{zv_final:.3f} X{p[0]+st.session_state.off_x:.3f} Y{p[1]+st.session_state.off_y:.3f} F1500"); n_c += 5
+                        # בדיקת היתכנות לרמפה וקטורית
+                        if (it['is_pocket'] or it['type'] == '102' or len(path) < 2 or ramp_len_global == 0):
+                            nc.append(f"N{n_c} G00 X{p[0]+st.session_state.off_x:.3f} Y{p[1]+st.session_state.off_y:.3f} Z{st.session_state.safety_h:.3f}"); n_c += 5
+                            nc.append(f"N{n_c} G01 Z{zv_final:.3f} F1500"); n_c += 5
+                        else:
+                            # לוגיקת Vector Aligned 3D Ramp
+                            p0, p1 = np.array(path[0]), np.array(path[1])
+                            vec = p1 - p0
+                            mag = np.linalg.norm(vec)
+                            if mag > 0:
+                                unit_v = vec / mag
+                                r_start = p0 - (unit_v * ramp_len_global)
+                                nc.append(f"N{n_c} G00 X{r_start[0]+st.session_state.off_x:.3f} Y{r_start[1]+st.session_state.off_y:.3f} Z{st.session_state.safety_h:.3f}"); n_c += 5
+                                nc.append(f"N{n_c} G01 X{p[0]+st.session_state.off_x:.3f} Y{p[1]+st.session_state.off_y:.3f} Z{zv_final:.3f} F1500"); n_c += 5
+                            else:
+                                nc.append(f"N{n_c} G00 X{p[0]+st.session_state.off_x:.3f} Y{p[1]+st.session_state.off_y:.3f} Z{st.session_state.safety_h:.3f}"); n_c += 5
+                                nc.append(f"N{n_c} G01 Z{zv_final:.3f} F1500"); n_c += 5
                     else: nc.append(f"N{n_c} G01 X{p[0]+st.session_state.off_x:.3f} Y{p[1]+st.session_state.off_y:.3f} F{int(it['f'])}"); n_c += 5
                 nc.append(f"N{n_c} G00 Z{st.session_state.safety_h:.3f}"); n_c += 5
-            
             last_tool_id = v_block['t_cnc']
             
         nc.extend([f"N{n_c} M30", "%"])
-        with col_cfg: st.download_button(f"📥 הורד NC (גרסה 51.8)", "\n".join(nc), f"{f_file.name}.nc")
+        with col_cfg: st.download_button(f"📥 הורד NC (גרסה 51.9)", "\n".join(nc), f"{f_file.name}.nc")
 
         with col_vis:
             fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0))
