@@ -4,8 +4,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 51.5 - THE SECURE DATABASE SYNC
-# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 51.4 עם הגנת כלי חסר וסנכרון T13.
+# Darwish 51.5 - THE SECURE DATABASE SYNC (Updated Tool Registry)
+# חוק יסוד: איסור מוחלט על צמצום קוד. מבוסס על 51.5 עם עדכון T1 ו-T13.
 st.set_page_config(page_title="Darwish 51.5 Precision", layout="wide")
 
 # --- 1. ניהול הגדרות ופרופיל (Persistence) ---
@@ -27,10 +27,10 @@ def import_config(uploaded_file):
         return True
     return False
 
-# --- 2. מסד כלים מורחב (Industrial DB - Synced with VCarve) ---
+# --- 2. מסד כלים מורחב (Industrial DB - Precision Update) ---
 if 'tool_db' not in st.session_state:
     st.session_state.tool_db = pd.DataFrame([
-        {"T_CNC": "T1", "MPR_Name": "130_old", "תיאור": "כרסום 40 מילימטר", "קוטר": 40.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 4000},
+        {"T_CNC": "T1", "MPR_Name": "137", "תיאור": "כרסום 40 מילימטר (ניקוי שולחן)", "קוטר": 40.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 4000},
         {"T_CNC": "T2", "MPR_Name": "142", "תיאור": "כרסום יהלום 6 מילימטר", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4500},
         {"T_CNC": "T3", "MPR_Name": "158", "תיאור": "כרסום 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3000},
         {"T_CNC": "T4", "MPR_Name": "128", "תיאור": "כרסום 12 מילימטר", "קוטר": 12.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 3500},
@@ -38,7 +38,7 @@ if 'tool_db' not in st.session_state:
         {"T_CNC": "T8", "MPR_Name": "136", "תיאור": "כרסום/מקדח 136", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 16000, "Feed": 3000},
         {"T_CNC": "T10", "MPR_Name": "139", "תיאור": "כרסום/מקדח 139", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2000},
         {"T_CNC": "T11", "MPR_Name": "140", "תיאור": "כרסום 3 מילימטר (T11)", "קוטר": 3.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 2500},
-        {"T_CNC": "T13", "MPR_Name": "130", "תיאור": "כרסום T13 (VCarve)", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4000},
+        {"T_CNC": "T13", "MPR_Name": "130", "תיאור": "כרסום V 45 מעלות (גירונג)", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 4000},
         {"T_CNC": "T44", "MPR_Name": "5.0", "תיאור": "מקדח 5 מילימטר", "קוטר": 5.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
         {"T_CNC": "T47", "MPR_Name": "8.0", "תיאור": "מקדח 8 מילימטר", "קוטר": 8.0, "Z_Offset": 0.0, "RPM": 4500, "Feed": 1200},
         {"T_CNC": "T49", "MPR_Name": "15.0", "תיאור": "מקדח 15 מילימטר", "קוטר": 15.0, "Z_Offset": 0.0, "RPM": 3000, "Feed": 800}
@@ -50,7 +50,7 @@ with st.sidebar:
         cfg_file = st.file_uploader("טען פרופיל (JSON)", type=['json'])
         if cfg_file:
             if import_config(cfg_file): st.success("פרופיל נטען בהצלחה")
-        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v515")
+        st.session_state.tool_db = st.data_editor(st.session_state.tool_db, num_rows="dynamic", key="tools_v515_upd")
         st.download_button("שמור פרופיל נוכחי", export_config(), "darwish_config.json")
 
     st.divider()
@@ -69,13 +69,11 @@ def rotate_pt_v515(x, y, angle_deg):
     return x * math.cos(rad) - y * math.sin(rad), x * math.sin(rad) + y * math.cos(rad)
 
 def find_tool_numeric(mpr_id, df):
-    """SAFE-FAIL: Returns tool info and missing status."""
     try:
         target = round(_safe_float(mpr_id), 1)
         for _, row in df.iterrows():
             if round(_safe_float(row['MPR_Name']), 1) == target: return row, False
     except: pass
-    # SECURE: No longer defaults to T2. Marks as Missing.
     return {"T_CNC": "MISSING", "תיאור": f"כלי {mpr_id} לא מזוהה בטבלה", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 2000}, True
 
 def optimize_drill_path_v515(ops):
@@ -235,7 +233,6 @@ if upl:
                 z_vals = sorted(list(set(p['z'] for p in v_block['paths'])), reverse=True)
                 typeName = "Routing" if v_block['type'] in ['105','130','181'] else ("Pocket" if v_block['type'] == '112' else "Drill")
                 
-                # SECURE UI: Red box for missing tools
                 if v_block['missing']:
                     has_error = True
                     with st.error(f"❌ {v_block['t_cnc']} | {v_block['desc']} | חובה לעדכן בטבלת הכלים"):
