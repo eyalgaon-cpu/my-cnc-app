@@ -4,9 +4,9 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-# Darwish 53.0 - SINGLE FILE VIEW (FULL INTEGRITY)
-# 52.2-52.9 היסטוריה | 53.0: בלוקים והדמיה לפי קובץ נבחר בלבד + מידע פלטה
-st.set_page_config(page_title="Darwish 53.0 Local", layout="wide")
+# Darwish 53.1 - REAL CIRCLES (FULL INTEGRITY)
+# 52.2-53.0 היסטוריה | 53.1: קידוחים מוצגים כעיגולים גיאומטריים אמיתיים בסקלה נכונה
+st.set_page_config(page_title="Darwish 53.1 Local", layout="wide")
 
 CONFIG_FILE = "darwish_config.json"
 
@@ -173,7 +173,7 @@ def get_f(key, block, default=0.0):
     return _safe_float(m.group(1)) if m else default
 
 # --- 4. ממשק הפקה והדמיה ---
-st.title("🏭 דרוויש 53.0 - SINGLE FILE VIEW")
+st.title("🏭 דרוויש 53.1 - REAL CIRCLES")
 col_cfg, col_vis = st.columns([1, 2])
 
 # שמירת נתוני הדמיה לכל קובץ
@@ -362,7 +362,7 @@ if upl:
                 order = [b['id'] for b in sorted_blocks]
 
         # --- ייצור NC (Production Master 52.6 - Smart Waves) ---
-        nc = ["%", "(DARWISH 53.0 - SINGLE FILE VIEW)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        nc = ["%", "(DARWISH 53.1 - REAL CIRCLES)", f"N10 G90 G54 G21 G17"]; n_c = 20
         last_tool_id = None
 
         def write_block_at_depth(b_cfg, v_block, zv_final, it, nc, n_c, last_tool_id):
@@ -426,7 +426,7 @@ if upl:
             
         nc.extend([f"N{n_c} M30", "%"])
         if f_file.name == selected_file:
-            with col_cfg: st.download_button(f"📥 הורד NC (גרסה 53.0)", "\n".join(nc), f"{f_file.name}.nc")
+            with col_cfg: st.download_button(f"📥 הורד NC (גרסה 53.1)", "\n".join(nc), f"{f_file.name}.nc")
 
         # שמירת הגרף ב-session_state
         fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0), height=650)
@@ -439,7 +439,23 @@ if upl:
                 ti_calc = round(thick - (zv_calc - it['z_off'] + st.session_state.gz), 3)
                 h_text = f"<b>{v_block['t_cnc']}</b>: {v_block['desc']}<br>EA: {it['ea']}<br>קוטר: {it['diam']} מילימטר<br>TI: {ti_calc:.3f} מילימטר"
                 ox, oy = zip(*it['pts']); color = "red" if v_block['missing'] else ("green" if v_block['is_dr'] else ("red" if b_cfg['is_sep'] else "blue"))
-                if v_block['is_dr']: fig.add_trace(go.Scatter(x=[x+st.session_state.off_x for x in ox], y=[y+st.session_state.off_y for y in oy], mode='markers+lines', marker=dict(size=it['diam'], color=color), line=dict(width=1, dash='dot'), hoverinfo="text", text=h_text, showlegend=False))
+                if v_block['is_dr']:
+                    # ציור עיגולים גיאומטריים אמיתיים בקואורדינטות מילימטר
+                    r = it['diam'] / 2
+                    theta = np.linspace(0, 2*np.pi, 32)
+                    for pt in it['pts']:
+                        cx = pt[0] + st.session_state.off_x
+                        cy = pt[1] + st.session_state.off_y
+                        circle_x = list(cx + r * np.cos(theta)) + [None]
+                        circle_y = list(cy + r * np.sin(theta)) + [None]
+                        fig.add_trace(go.Scatter(
+                            x=circle_x, y=circle_y,
+                            mode='lines',
+                            line=dict(color=color, width=1.5),
+                            fill='toself',
+                            fillcolor=f'rgba(0,180,0,0.3)' if color == 'green' else f'rgba(255,0,0,0.3)',
+                            hoverinfo="text", text=h_text, showlegend=False
+                        ))
                 else:
                     fig.add_trace(go.Scatter(x=[x+st.session_state.off_x for x in ox]+[ox[0]+st.session_state.off_x], y=[y+st.session_state.off_y for y in oy]+[oy[0]+st.session_state.off_y], mode='lines', line=dict(color=color, width=2), hoverinfo="skip", showlegend=False))
                     s_p = calculate_path_v518(it['pts'], it['rad'], it['rk'], it['is_pocket'])
