@@ -5,12 +5,12 @@ import pandas as pd
 import numpy as np
 from shapely.geometry import Polygon
 
-# Darwish 56.1 - MPR + DXF + CIX Support
+# Darwish 57.9 - MPR + DXF + CIX Support
 # 56.0: הוספת ייצוא CIX (SCM/Biesse Maestro), תיקון DS=1 בחישוב מרכז קשת
 # 54.0: שקלול קאנטים (Edge Banding)
 # 53.73: תיקון h_d_sq (floating point בסמי-קשת), offset ב-hover text
 # 53.70: תיקון DS off-by-one; 53.69: 128 נקודות + bbox אנליטי
-st.set_page_config(page_title="Darwish 56.1 Local", layout="wide")
+st.set_page_config(page_title="Darwish 57.9 Local", layout="wide")
 
 CONFIG_FILE = "darwish_config.json"
 
@@ -27,8 +27,8 @@ DEFAULT_TOOLS_ALON = [
     {"T_CNC": "T9",  "MPR_Name": "5.0",      "DXF_Name": "5 mm",    "תיאור": "מקדח 5 מילימטר",             "קוטר": 5.0,   "Z_Offset": 0.0, "RPM": 3500, "Feed": 2800},
     {"T_CNC": "T10", "MPR_Name": "15.0",     "DXF_Name": "15 mm",   "תיאור": "מקדח 15 מילימטר (ימין)",     "קוטר": 15.0,  "Z_Offset": 0.0, "RPM": 4000, "Feed": 2800},
     # --- כרסומים ---
-    {"T_CNC": "vid_6",      "MPR_Name": "142",    "DXF_Name": "CUT 6",  "תיאור": "כרסום 6 מילימטר",                          "קוטר": 6.0,  "Z_Offset": 0.0, "RPM": 18000, "Feed": 12000},
-    {"T_CNC": "vid_8",      "MPR_Name": "158",    "DXF_Name": "CUT 8",  "תיאור": "כרסום 8 מילימטר",                          "קוטר": 8.0,  "Z_Offset": 0.0, "RPM": 18000, "Feed": 12000},
+    {"T_CNC": "VID_6",      "MPR_Name": "142",    "DXF_Name": "CUT 6",  "תיאור": "כרסום 6 מילימטר",                          "קוטר": 6.0,  "Z_Offset": 0.0, "RPM": 18000, "Feed": 12000},
+    {"T_CNC": "VID_8",      "MPR_Name": "158",    "DXF_Name": "CUT 8",  "תיאור": "כרסום 8 מילימטר",                          "קוטר": 8.0,  "Z_Offset": 0.0, "RPM": 18000, "Feed": 12000},
     {"T_CNC": "Di_12_mdf",  "MPR_Name": "128",    "DXF_Name": "CUT 12", "תיאור": "כרסום 12 מילימטר MDF (עם שואב, עד 19מ-מ)", "קוטר": 12.0, "Z_Offset": 0.0, "RPM": 24000, "Feed": 18000},
     {"T_CNC": "Nesting_12", "MPR_Name": "MISSING","DXF_Name": "",       "תיאור": "כרסום 12 מילימטר נסטינג (עם שואב, עד 17מ-מ)","קוטר": 12.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 10000},
 ]
@@ -110,6 +110,9 @@ with st.sidebar:
         selected_machine = st.selectbox("🏭 מכונה פעילה:", machine_names, index=machine_names.index(active))
         if selected_machine != st.session_state.get('active_machine'):
             st.session_state.active_machine = selected_machine
+            # איפוס סיבוב לפי ברירת מחדל של המכונה
+            MACHINE_ROTATE_DEFAULT = {'אלון': False}
+            st.session_state['rotate_default'] = MACHINE_ROTATE_DEFAULT.get(selected_machine, True)
             save_config_auto()
             st.rerun()
     with col_m2:
@@ -182,6 +185,17 @@ def find_tool_numeric(mpr_id, df):
     except: pass
     return {"T_CNC": "MISSING", "תיאור": f"כלי {mpr_id} לא מזוהה בטבלה", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 2000}, True
 
+def calc_path_length(pts):
+    """מחשב אורך מסלול בין רשימת נקודות (מילימטר)."""
+    if not pts or len(pts) < 2:
+        return 0.0
+    total = 0.0
+    for i in range(len(pts) - 1):
+        dx = pts[i+1][0] - pts[i][0]
+        dy = pts[i+1][1] - pts[i][1]
+        total += math.sqrt(dx*dx + dy*dy)
+    return round(total, 1)
+
 def optimize_drill_path_v518(ops):
     if not ops: return ops
     optimized = [ops.pop(0)]
@@ -192,14 +206,16 @@ def optimize_drill_path_v518(ops):
     return optimized
 
 def apply_geo_offset(pts, offset):
-    """Expand/shrink polygon by offset mm using shapely buffer (handles arcs correctly)."""
+    """Expand/shrink polygon by offset mm using shapely buffer.
+    Uses mitre join style to preserve sharp corners without spikes (e.g. Cabineo D-shape faces)."""
     if abs(offset) < 1e-9 or not pts or len(pts) < 3:
         return pts
     try:
         poly = Polygon(pts)
         if not poly.is_valid:
             poly = poly.buffer(0)
-        expanded = poly.buffer(offset)
+        # join_style=2 = mitre: extends sharp corners cleanly, no rounding/spikes
+        expanded = poly.buffer(offset, join_style=2, mitre_limit=10.0)
         if expanded.is_empty:
             return pts
         new_pts = [list(c) for c in expanded.exterior.coords]
@@ -229,7 +245,16 @@ def calculate_path_v518(pts, r, mpr_rk, is_pocket=False):
     if r <= 0 or len(pts) < 2: return pts
     pts_arr = np.array(pts); n = len(pts_arr)
     area = sum((pts_arr[i][0]*pts_arr[(i+1)%n][1] - pts_arr[(i+1)%n][0]*pts_arr[i][1]) for i in range(n))/2.0
-    side = (1 if area > 0 else -1) if is_pocket else (1 if "WRKL" in mpr_rk else -1 if "WRKR" in mpr_rk else 0)
+    is_ccw = (area > 0)
+    if is_pocket:
+        side = 1 if is_ccw else -1
+    else:
+        if "WRKR" in mpr_rk:
+            side = -1 if is_ccw else 1
+        elif "WRKL" in mpr_rk:
+            side = 1 if is_ccw else -1
+        else:
+            side = 0
     if side == 0: return pts
 
     shifted = []
@@ -717,131 +742,314 @@ def get_cix_entities(geo_text, rotate, wp_w, global_off_x, global_off_y):
 
 def generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rotate):
     """מייצר קובץ CIX מלא לפורמט SCM/Biesse Maestro 5.0.
-    dp_val = thick - z_val (עומק נקי מפני הפלטה, ללא gz/z_off שהם תיקוני NC בלבד)."""
+    לוגיקת גלים זהה ל-NC: כל הסבבים הלא-ניתוק קודם, אחר כך גל אחר גל על כל הניתוקים."""
     cix = ["BEGIN ID CIX\n\tREL= 5.0\nEND ID\n"]
-    cix.append(f"BEGIN MAINDATA\n\tLPX={wp_l}\n\tLPY={wp_w}\n\tLPZ={thick}\n\tORLST=\"0\"\nEND MAINDATA\n")
+    eff_lpx = wp_w if rotate else wp_l
+    eff_lpy = wp_l if rotate else wp_w
+    cix.append(f"BEGIN MAINDATA\n\tLPX={eff_lpx}\n\tLPY={eff_lpy}\n\tLPZ={thick}\n\tORLST=\"0\"\nEND MAINDATA\n")
     cid = 1000
 
-    for b_id in order:
-        b_cfg = block_configs[b_id]
+    # הפרדה: ניתוק vs לא-ניתוק — זהה ללוגיקת NC
+    cutting_ids     = [b_id for b_id in order if block_configs[b_id]['is_sep']]
+    non_cutting_ids = [b_id for b_id in order if not block_configs[b_id]['is_sep']]
+
+    def _write_block(b_cfg, z_val):
+        nonlocal cid
         v_block = b_cfg['v_block']
         it = v_block['paths'][0]
         t_name = v_block['t_cnc']
         eff_rk = b_cfg.get('rk_override', it.get('rk', 'WRKL'))
-        crc_val = 1 if eff_rk == 'WRKL' else (2 if eff_rk == 'WRKR' else 0)
-
-        for p_idx, z_val in enumerate(b_cfg['passes']):
-            # DP = עומק מפני הפלטה — ללא z_off/gz שהם תיקוני NC בלבד
-            dp_val = round(thick - z_val, 3)
-
-            if v_block['is_dr']:
-                for drill_op in v_block['paths']:
-                    pt = drill_op['pts'][0]
-                    cid += 1
-                    cix.append(
-                        f"BEGIN MACRO\n\tNAME=BV\n"
-                        f"\tPARAM,NAME=SIDE,VALUE=0\n"
-                        f"\tPARAM,NAME=CRN,VALUE=\"1\"\n"
-                        f"\tPARAM,NAME=X,VALUE={pt[0]+st.session_state.off_x:.2f}\n"
-                        f"\tPARAM,NAME=Y,VALUE={pt[1]+st.session_state.off_y:.2f}\n"
-                        f"\tPARAM,NAME=Z,VALUE=0\n"
-                        f"\tPARAM,NAME=DP,VALUE={dp_val}\n"
-                        f"\tPARAM,NAME=DIA,VALUE={it['diam']}\n"
-                        f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
-                        f"\tPARAM,NAME=LAY,VALUE=\"BG\"\n"
-                        f"\tPARAM,NAME=TTP,VALUE={1 if dp_val >= thick - 0.2 else 0}\n"
-                        f"\tPARAM,NAME=OPT,VALUE=1\n"
-                        f"END MACRO\n"
-                    )
-            else:
+        if eff_rk == 'WRKR':
+            crc_val = 2
+        elif eff_rk == 'WRKL':
+            crc_val = 1
+        else:
+            crc_val = 0
+        dp_val = round(thick - z_val, 3)
+        if v_block['is_dr']:
+            for drill_op in v_block['paths']:
+                pt = drill_op['pts'][0]
                 cid += 1
                 cix.append(
-                    f"BEGIN MACRO\n\tNAME=ROUT\n"
-                    f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
+                    f"BEGIN MACRO\n\tNAME=BV\n"
                     f"\tPARAM,NAME=SIDE,VALUE=0\n"
                     f"\tPARAM,NAME=CRN,VALUE=\"1\"\n"
+                    f"\tPARAM,NAME=X,VALUE={pt[0]+st.session_state.off_x:.2f}\n"
+                    f"\tPARAM,NAME=Y,VALUE={pt[1]+st.session_state.off_y:.2f}\n"
+                    f"\tPARAM,NAME=Z,VALUE=0\n"
                     f"\tPARAM,NAME=DP,VALUE={dp_val}\n"
                     f"\tPARAM,NAME=DIA,VALUE={it['diam']}\n"
-                    f"\tPARAM,NAME=WSP,VALUE={int(it.get('s', 12000))}\n"
-                    f"\tPARAM,NAME=SHP,VALUE=0\n"
-                    f"\tPARAM,NAME=CRC,VALUE={crc_val}\n"
-                    f"\tPARAM,NAME=TNM,VALUE=\"{t_name}\"\n"
-                    f"\tPARAM,NAME=TTP,VALUE=100\n"
-                    f"\tPARAM,NAME=THR,VALUE=NO\n"
+                    f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
+                    f"\tPARAM,NAME=LAY,VALUE=\"BG\"\n"
+                    f"\tPARAM,NAME=TTP,VALUE={1 if dp_val >= thick - 0.2 else 0}\n"
+                    f"\tPARAM,NAME=OPT,VALUE=1\n"
                     f"END MACRO\n"
                 )
-                ea_id = it.get('ea', '')
-                raw_geo = geo_texts.get(ea_id, '')
-                entities = get_cix_entities(raw_geo, rotate, wp_w,
-                                            st.session_state.off_x, st.session_state.off_y)
-                if not entities:
-                    # fallback: נקודות מחושבות (ללא קשתות)
-                    pts = it['pts']
-                    entities = [{'type': 'START',
-                                 'x': pts[0][0] + st.session_state.off_x,
-                                 'y': pts[0][1] + st.session_state.off_y}]
-                    for p in pts[1:]:
-                        entities.append({'type': 'LINE',
-                                         'x': p[0] + st.session_state.off_x,
-                                         'y': p[1] + st.session_state.off_y})
-                for ent in entities:
-                    cid += 1
-                    if ent['type'] == 'START':
-                        cix.append(
-                            f"BEGIN MACRO\n\tNAME=START_POINT\n"
-                            f"\tPARAM,NAME=ID,VALUE=\"{cid}\"\n"
-                            f"\tPARAM,NAME=X,VALUE={ent['x']:.2f}\n"
-                            f"\tPARAM,NAME=Y,VALUE={ent['y']:.2f}\n"
-                            f"\tPARAM,NAME=Z,VALUE=0\n"
-                            f"END MACRO\n"
-                        )
-                    elif ent['type'] == 'LINE':
-                        cix.append(
-                            f"BEGIN MACRO\n\tNAME=LINE_EP\n"
-                            f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
-                            f"\tPARAM,NAME=XE,VALUE={ent['x']:.2f}\n"
-                            f"\tPARAM,NAME=YE,VALUE={ent['y']:.2f}\n"
-                            f"\tPARAM,NAME=ZS,VALUE=0\n"
-                            f"\tPARAM,NAME=ZE,VALUE=0\n"
-                            f"END MACRO\n"
-                        )
-                    elif ent['type'] == 'ARC':
-                        cix.append(
-                            f"BEGIN MACRO\n\tNAME=ARC_EPCE\n"
-                            f"\tPARAM,NAME=ID,VALUE={cid}\n"
-                            f"\tPARAM,NAME=XE,VALUE={ent['x']:.2f}\n"
-                            f"\tPARAM,NAME=YE,VALUE={ent['y']:.2f}\n"
-                            f"\tPARAM,NAME=XC,VALUE={ent['cx']:.2f}\n"
-                            f"\tPARAM,NAME=YC,VALUE={ent['cy']:.2f}\n"
-                            f"\tPARAM,NAME=ZS,VALUE=0\n"
-                            f"\tPARAM,NAME=ZE,VALUE=0\n"
-                            f"\tPARAM,NAME=DIR,VALUE={ent['dir']}\n"
-                            f"END MACRO\n"
-                        )
+        else:
+            cid += 1
+            cix.append(
+                f"BEGIN MACRO\n\tNAME=ROUT\n"
+                f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
+                f"\tPARAM,NAME=SIDE,VALUE=0\n"
+                f"\tPARAM,NAME=CRN,VALUE=\"1\"\n"
+                f"\tPARAM,NAME=DP,VALUE={dp_val}\n"
+                f"\tPARAM,NAME=DIA,VALUE={it['diam']}\n"
+                f"\tPARAM,NAME=WSP,VALUE={int(it.get('s', 12000))}\n"
+                f"\tPARAM,NAME=SHP,VALUE=0\n"
+                f"\tPARAM,NAME=CRC,VALUE={crc_val}\n"
+                f"\tPARAM,NAME=TIN,VALUE=7\n"
+                f"\tPARAM,NAME=TOU,VALUE=7\n"
+                f"\tPARAM,NAME=AIN,VALUE=38.66\n"
+                f"\tPARAM,NAME=AOU,VALUE=38.66\n"
+                f"\tPARAM,NAME=PRP,VALUE=50\n"
+                f"\tPARAM,NAME=TNM,VALUE=\"{t_name}\"\n"
+                f"\tPARAM,NAME=TTP,VALUE=100\n"
+                f"\tPARAM,NAME=THR,VALUE=NO\n"
+                f"END MACRO\n"
+            )
+            ea_id = it.get('ea', '')
+            raw_geo = geo_texts.get(ea_id, '')
+            entities = get_cix_entities(raw_geo, rotate, wp_w,
+                                        st.session_state.off_x, st.session_state.off_y)
+            # ensure CW direction for correct CRC behavior on Biesse
+            if entities:
+                raw_pts = [(e['x'] - st.session_state.off_x, e['y'] - st.session_state.off_y) for e in entities]
+                n_p = len(raw_pts)
+                area = sum((raw_pts[i][0]*raw_pts[(i+1)%n_p][1] - raw_pts[(i+1)%n_p][0]*raw_pts[i][1]) for i in range(n_p)) / 2.0
+                if area > 0:  # CCW -> reverse properly (arc-aware)
+                    def reverse_entities(ents):
+                        """הופך מסלול מ-CCW ל-CW תוך שמירת תקינות גיאומטרית של קשתות."""
+                        # בנה רשימת נקודות התחלה לכל ישות
+                        starts = []
+                        starts.append((ents[0]['x'], ents[0]['y']))  # START
+                        for e in ents[1:]:
+                            starts.append((e['x'], e['y']))
+                        # הפוך: הישות i תיסע מ-starts[i] → starts[i-1]
+                        # כלומר, start_point החדש = נקודת הסיום הישנה (starts[-1])
+                        new_ents = [{'type': 'START', 'x': starts[-1][0], 'y': starts[-1][1]}]
+                        for i in range(len(ents) - 1, 0, -1):
+                            e = ents[i]
+                            target_x, target_y = starts[i - 1]
+                            if e['type'] == 'ARC':
+                                # מרכז הקשת נשאר זהה; רק היעד והכיוון מתהפכים
+                                flipped_dir = 'dirCCW' if e['dir'] == 'dirCW' else 'dirCW'
+                                new_ents.append({'type': 'ARC', 'x': target_x, 'y': target_y,
+                                                 'cx': e['cx'], 'cy': e['cy'], 'dir': flipped_dir})
+                            else:
+                                new_ents.append({'type': 'LINE', 'x': target_x, 'y': target_y})
+                        return new_ents
+                    entities = reverse_entities(entities)
+            if not entities:
+                # fallback: raw points, machine handles CRC offset
+                pts = it['pts']
+                n_p = len(pts)
+                if n_p > 1:
+                    area = sum((pts[i][0]*pts[(i+1)%n_p][1] - pts[(i+1)%n_p][0]*pts[i][1]) for i in range(n_p)) / 2.0
+                    if area > 0:  # CCW -> reverse to CW
+                        pts = pts[::-1]
+                entities = [{'type': 'START',
+                             'x': pts[0][0] + st.session_state.off_x,
+                             'y': pts[0][1] + st.session_state.off_y}]
+                for p in pts[1:]:
+                    entities.append({'type': 'LINE',
+                                     'x': p[0] + st.session_state.off_x,
+                                     'y': p[1] + st.session_state.off_y})
+            for ent in entities:
                 cid += 1
-                cix.append(f"BEGIN MACRO\n\tNAME=ENDPATH\n\tPARAM,NAME=ID,VALUE=\"{cid}\"\nEND MACRO\n")
+                if ent['type'] == 'START':
+                    cix.append(
+                        f"BEGIN MACRO\n\tNAME=START_POINT\n"
+                        f"\tPARAM,NAME=ID,VALUE=\"{cid}\"\n"
+                        f"\tPARAM,NAME=X,VALUE={ent['x']:.2f}\n"
+                        f"\tPARAM,NAME=Y,VALUE={ent['y']:.2f}\n"
+                        f"\tPARAM,NAME=Z,VALUE=0\n"
+                        f"END MACRO\n"
+                    )
+                elif ent['type'] == 'LINE':
+                    cix.append(
+                        f"BEGIN MACRO\n\tNAME=LINE_EP\n"
+                        f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
+                        f"\tPARAM,NAME=XE,VALUE={ent['x']:.2f}\n"
+                        f"\tPARAM,NAME=YE,VALUE={ent['y']:.2f}\n"
+                        f"\tPARAM,NAME=ZS,VALUE=0\n"
+                        f"\tPARAM,NAME=ZE,VALUE=0\n"
+                        f"END MACRO\n"
+                    )
+                elif ent['type'] == 'ARC':
+                    cix.append(
+                        f"BEGIN MACRO\n\tNAME=ARC_EPCE\n"
+                        f"\tPARAM,NAME=ID,VALUE={cid}\n"
+                        f"\tPARAM,NAME=XE,VALUE={ent['x']:.2f}\n"
+                        f"\tPARAM,NAME=YE,VALUE={ent['y']:.2f}\n"
+                        f"\tPARAM,NAME=XC,VALUE={ent['cx']:.2f}\n"
+                        f"\tPARAM,NAME=YC,VALUE={ent['cy']:.2f}\n"
+                        f"\tPARAM,NAME=ZS,VALUE=0\n"
+                        f"\tPARAM,NAME=ZE,VALUE=0\n"
+                        f"\tPARAM,NAME=DIR,VALUE={ent['dir']}\n"
+                        f"END MACRO\n"
+                    )
+            if entities and not it['is_pocket']:
+                start_ent = next((e for e in entities if e['type'] == 'START'), None)
+                if start_ent:
+                    cid += 1
+                    cix.append(
+                        f"BEGIN MACRO\n\tNAME=LINE_EP\n"
+                        f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
+                        f"\tPARAM,NAME=XE,VALUE={start_ent['x']:.2f}\n"
+                        f"\tPARAM,NAME=YE,VALUE={start_ent['y']:.2f}\n"
+                        f"\tPARAM,NAME=ZS,VALUE=0\n"
+                        f"\tPARAM,NAME=ZE,VALUE=0\n"
+                        f"END MACRO\n"
+                    )
+            cid += 1
+            cix.append(f"BEGIN MACRO\n\tNAME=ENDPATH\n\tPARAM,NAME=ID,VALUE=\"{cid}\"\nEND MACRO\n")
+    # שלב 1: בלוקים ללא ניתוק — כל הפסיעות שלהם
+    for b_id in non_cutting_ids:
+        b_cfg = block_configs[b_id]
+        for z_val in b_cfg['passes']:
+            _write_block(b_cfg, z_val)
+
+    # שלב 2: בלוקים עם ניתוק — לוגיקת גלים (כמו NC)
+    if cutting_ids:
+        max_waves = max(len(block_configs[b_id]['passes']) for b_id in cutting_ids)
+        for wave_idx in range(max_waves):
+            for b_id in cutting_ids:
+                b_cfg = block_configs[b_id]
+                if wave_idx < len(b_cfg['passes']):
+                    _write_block(b_cfg, b_cfg['passes'][wave_idx])
 
     return "".join(cix)
 
 
 
-st.title("🏭 דרוויש 56.1 - MPR + DXF + CIX")
+
+def parse_cix_for_display(text):
+    """פרסור קובץ CIX להדמיה.
+    מחזיר dict עם:
+      - board: (lpx, lpy, lpz)
+      - drills: רשימת קידוחים [{x, y, dia, dp, id}]
+      - routes: רשימת מסלולי כרסום [{id, dp, dia, tnm, crc, pts, path_len}]
+    """
+    result = {'board': (0, 0, 0), 'drills': [], 'routes': []}
+
+    # מידות הפלטה
+    lpx_m = re.search(r'LPX=([\d.]+)', text)
+    lpy_m = re.search(r'LPY=([\d.]+)', text)
+    lpz_m = re.search(r'LPZ=([\d.]+)', text)
+    lpx = float(lpx_m.group(1)) if lpx_m else 0
+    lpy = float(lpy_m.group(1)) if lpy_m else 0
+    lpz = float(lpz_m.group(1)) if lpz_m else 0
+    result['board'] = (lpx, lpy, lpz)
+
+    # פיצול למאקרו-בלוקים
+    macros = re.split(r'BEGIN MACRO', text)
+
+    current_rout = None  # מסלול פעיל
+
+    for macro in macros:
+        name_m = re.search(r'NAME=(\w+)', macro)
+        if not name_m:
+            continue
+        name = name_m.group(1)
+
+        def get_param(pname, blk=macro):
+            m = re.search(rf'NAME={pname},VALUE="?([^"\n]+)"?', blk)
+            return m.group(1).strip() if m else None
+
+        if name == 'BV':
+            # קידוח
+            x = get_param('X'); y = get_param('Y')
+            dp = get_param('DP'); dia = get_param('DIA')
+            pid = get_param('ID') or ''
+            if x and y:
+                result['drills'].append({
+                    'x': float(x), 'y': float(y),
+                    'dp': float(dp) if dp else 0,
+                    'dia': float(dia) if dia else 8,
+                    'id': pid
+                })
+
+        elif name == 'ROUT':
+            # התחלת מסלול חדש
+            dp = get_param('DP'); dia = get_param('DIA')
+            tnm = get_param('TNM') or ''
+            crc = get_param('CRC') or '0'
+            pid = get_param('ID') or ''
+            current_rout = {
+                'id': pid, 'dp': float(dp) if dp else 0,
+                'dia': float(dia) if dia else 6,
+                'tnm': tnm.strip('"'), 'crc': crc,
+                'pts': [], 'path_len': 0
+            }
+
+        elif name == 'START_POINT' and current_rout is not None:
+            x = get_param('X'); y = get_param('Y')
+            if x and y:
+                current_rout['pts'].append((float(x), float(y)))
+
+        elif name == 'LINE_EP' and current_rout is not None:
+            x = get_param('XE'); y = get_param('YE')
+            if x and y:
+                current_rout['pts'].append((float(x), float(y)))
+
+        elif name == 'ARC_EPCE' and current_rout is not None:
+            xe = get_param('XE'); ye = get_param('YE')
+            xc = get_param('XC'); yc = get_param('YC')
+            dirv = get_param('DIR') or 'dirCW'
+            if xe and ye and xc and yc and current_rout['pts']:
+                # קירוב קשת ל-64 נקודות
+                x1, y1 = current_rout['pts'][-1]
+                x2, y2 = float(xe), float(ye)
+                cx, cy = float(xc), float(yc)
+                a1 = math.atan2(y1 - cy, x1 - cx)
+                a2 = math.atan2(y2 - cy, x2 - cx)
+                r = math.sqrt((x1-cx)**2 + (y1-cy)**2)
+                if 'CCW' in dirv.upper():
+                    if a2 < a1: a2 += 2*math.pi
+                else:
+                    if a2 > a1: a2 -= 2*math.pi
+                n_pts = 64
+                for j in range(1, n_pts+1):
+                    t = j / n_pts
+                    angle = a1 + t*(a2-a1)
+                    current_rout['pts'].append((cx + r*math.cos(angle), cy + r*math.sin(angle)))
+
+        elif name == 'ENDPATH' and current_rout is not None:
+            # סגירת מסלול — חישוב אורך
+            pts = current_rout['pts']
+            total = sum(math.sqrt((pts[i+1][0]-pts[i][0])**2 + (pts[i+1][1]-pts[i][1])**2)
+                        for i in range(len(pts)-1))
+            current_rout['path_len'] = round(total, 1)
+            if pts:
+                result['routes'].append(current_rout)
+            current_rout = None
+
+    return result
+
+
+st.title("🏭 דרוויש 57.9 - MPR + DXF + CIX")
 
 # הגדרות גלובליות בשורה אחת
 col_g1, col_g2, col_g3, col_g4 = st.columns([1, 1, 1, 2])
 with col_g1:
-    rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=True)
+    MACHINE_ROTATE_DEFAULT = {'אלון': False}
+    _active_machine = st.session_state.get('active_machine', 'אבי')
+    _rotate_default = st.session_state.pop('rotate_default',
+                          MACHINE_ROTATE_DEFAULT.get(_active_machine, True))
+    rotate = st.checkbox("סובב חלק 90 מעלות (CCW)", value=_rotate_default)
 with col_g2:
     flip_180 = st.checkbox("סובב פלטה 180°", value=False)
 with col_g3:
     ramp_len_global = st.slider("אורך נחיתה (Ramp)", 0, 50, 20)
     st.session_state.ramp_len_global = ramp_len_global
 with col_g4:
-    upl_col_mpr, upl_col_dxf = st.columns(2)
+    upl_col_mpr, upl_col_dxf, upl_col_cix = st.columns(3)
     with upl_col_mpr:
         upl = st.file_uploader("טען קבצי MPR", accept_multiple_files=True, type=['mpr'])
     with upl_col_dxf:
         upl_dxf = st.file_uploader("טען קבצי DXF", accept_multiple_files=True, type=['dxf'])
+    with upl_col_cix:
+        upl_cix = st.file_uploader("טען קבצי CIX", accept_multiple_files=True, type=['cix'])
 
 # --- שקלול קאנטים (Edge Banding) ---
 col_eb1, col_eb2, col_eb3 = st.columns([1, 1, 4])
@@ -952,7 +1160,7 @@ if upl:
                     _orig_w, _orig_h = _geo_analytical_bbox(_geo_txt)
                 else:
                     _orig_w = 0; _orig_h = 0
-                ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': thick-z_abs, 'z_off': t_info['Z_Offset'], 'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': geoid, 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else "WRKL", 'is_pocket': (tag == '181'), 'missing': is_missing, 'orig_w': _orig_w, 'orig_h': _orig_h})
+                ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': thick-z_abs, 'z_off': t_info['Z_Offset'], 'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': geoid, 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else ("WRKR" if re.search(r'RI="1"', bc) else "WRKL"), 'is_pocket': (tag == '181'), 'missing': is_missing, 'orig_w': _orig_w, 'orig_h': _orig_h})
 
         if flip_180:
             nc_bx = wp_w if rotate else wp_l
@@ -999,19 +1207,23 @@ if upl:
                 ordered_blocks.extend(tool_groups[t])
         ordered_blocks.extend(sep_blocks)
 
-        # שלב 4: חישוב def_idx לפי הסדר החדש
+        # שלב 4: חישוב def_idx לפי שטח החלק (קטן לגדול), ניתוקים תמיד בסוף
         def_idx_map = {}
         sep_counter = 1000
         reg_counter = 10
-        for item in ordered_blocks:
-            v_key = item[0]
-            is_sep = item[3]
-            if is_sep:
-                def_idx_map[v_key] = sep_counter
-                sep_counter += 10
-            else:
-                def_idx_map[v_key] = reg_counter
-                reg_counter += 10
+        # מיין חלקים לא-ניתוק לפי שטח (orig_w × orig_h)
+        non_sep_items = [item for item in ordered_blocks if not item[3]]
+        sep_items     = [item for item in ordered_blocks if item[3]]
+        non_sep_items_sorted = sorted(
+            non_sep_items,
+            key=lambda item: (item[1].get('orig_w', 0) * item[1].get('orig_h', 0))
+        )
+        for item in non_sep_items_sorted:
+            def_idx_map[item[0]] = reg_counter
+            reg_counter += 10
+        for item in sep_items:
+            def_idx_map[item[0]] = sep_counter
+            sep_counter += 10
 
         # שמירת מידע על הפלטה
         st.session_state.file_info[f_file.name] = {
@@ -1034,6 +1246,13 @@ if upl:
         with col_cfg:
             info = st.session_state.file_info[f_file.name]
             st.info(f"📐 {info['l']} × {info['w']} מילימטר | עובי: {info['t']} מילימטר | חלקים: {info['n_parts']}")
+
+            # כפתור איפוס סדר כרסום
+            if st.button("🔄 אפס סדר (קטן לגדול)", key=f"reset_order_{f_file.name}"):
+                for key in list(st.session_state.keys()):
+                    if key.startswith(f"idx_") and key.endswith(f"_{f_file.name}"):
+                        del st.session_state[key]
+                st.rerun()
 
             with st.container(height=550):
                 with st.expander(f"📦 ניהול בלוקים: {f_file.name}", expanded=False):
@@ -1185,7 +1404,7 @@ if upl:
             order = [b['id'] for b in sorted_blocks]
 
         # --- ייצור NC ---
-        nc = ["%", "(DARWISH 56.1 - MPR + DXF)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        nc = ["%", "(DARWISH 57.9 - MPR + DXF)", f"N10 G90 G54 G21 G17"]; n_c = 20
         last_tool_id = None
 
         pass  # write_block_at_depth מוגדרת ברמת המודול
@@ -1217,16 +1436,27 @@ if upl:
 
         nc.extend([f"N{n_c} M30", "%"])
         with col_cfg:
-            st.download_button(f"📥 הורד NC (גרסה 56.1)", "\n".join(nc), f"{f_file.name}.nc")
+            st.download_button(f"📥 הורד NC (גרסה 57.9)", "\n".join(nc), f"{f_file.name}.nc")
             # --- ייצור CIX ---
             cix_data = generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rotate)
-            st.download_button(f"📥 הורד CIX (גרסה 56.1)", cix_data, f"{f_file.name}.cix",
+            st.download_button(f"📥 הורד CIX (גרסה 57.9)", cix_data, f"{f_file.name}.cix",
                                key=f"dl_cix_{f_file.name}")
 
         # שמירת הגרף ב-session_state
+        MACHINE_TABLE = {'אלון': (1300, 3050)}
+        _base_w, _base_h = MACHINE_TABLE.get(st.session_state.get('active_machine', 'אבי'), (1300, 3050))
+        # מידות הפלטה תלויות בסיבוב
+        b_disp_w = wp_w if rotate else wp_l
+        b_disp_h = wp_l if rotate else wp_w
+        _board_total_w = b_disp_w + st.session_state.off_x
+        _board_total_h = b_disp_h + st.session_state.off_y
+        if _board_total_w > _board_total_h:
+            _tbl_w, _tbl_h = max(_base_w, _base_h), min(_base_w, _base_h)
+        else:
+            _tbl_w, _tbl_h = min(_base_w, _base_h), max(_base_w, _base_h)
         fig = go.Figure(); fig.update_layout(dragmode='pan', xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=0, r=0, t=0, b=0), height=650)
-        fig.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050, line=dict(color="Gray", width=2), fillcolor="rgba(128,128,128,0.1)")
-        fig.add_shape(type="rect", x0=st.session_state.off_x, y0=st.session_state.off_y, x1=wp_w+st.session_state.off_x, y1=wp_l+st.session_state.off_y, line=dict(color="Sienna", width=3), fillcolor="rgba(139, 69, 19, 0.4)")
+        fig.add_shape(type="rect", x0=0, y0=0, x1=_tbl_w, y1=_tbl_h, line=dict(color="Gray", width=2), fillcolor="rgba(128,128,128,0.1)")
+        fig.add_shape(type="rect", x0=st.session_state.off_x, y0=st.session_state.off_y, x1=b_disp_w+st.session_state.off_x, y1=b_disp_h+st.session_state.off_y, line=dict(color="Sienna", width=3), fillcolor="rgba(139, 69, 19, 0.4)")
         for b_id in order:
             b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
             order_idx = b_cfg['order_idx']
@@ -1239,7 +1469,10 @@ if upl:
                     elif b_cfg['passes']:
                         zv_calc = b_cfg['passes'][-1]
                 ti_calc = round(thick - (zv_calc - it['z_off'] - st.session_state.gz), 3)
-                h_text = f"<b>[{order_idx}] {v_block['t_cnc']}</b>: {v_block['desc']}<br>קוטר: {it['diam']} מילימטר<br>TI: {ti_calc:.3f} מילימטר"
+                h_text = (
+                    f"<b>[{order_idx}] {v_block['t_cnc']}</b>: {v_block['desc']}<br>"
+                    f"קוטר: {it['diam']} מ\"מ | עומק: {ti_calc:.2f} מ\"מ"
+                )
                 ox, oy = zip(*it['pts']); color = "red" if v_block['missing'] else ("green" if v_block['is_dr'] else ("red" if b_cfg['is_sep'] else "blue"))
                 if v_block['is_dr']:
                     # ציור עיגולים גיאומטריים אמיתיים בקואורדינטות מילימטר
@@ -1272,7 +1505,11 @@ if upl:
                     else:
                         w_part = round(max(p[0] for p in pts_list) - min(p[0] for p in pts_list), 1)
                         h_part = round(max(p[1] for p in pts_list) - min(p[1] for p in pts_list), 1)
-                    h_text_with_dims = h_text + f"<br>📐 {w_part} × {h_part} מילימטר"
+                    h_text_with_dims = (
+                        f"<b>[{order_idx}] {v_block['t_cnc']}</b>: {v_block['desc']}<br>"
+                        f"קוטר: {it['diam']} מ\"מ | עומק: {ti_calc:.2f} מ\"מ<br>"
+                        f"📐 {w_part} × {h_part} מ\"מ | מסלול: {calc_path_length(it['pts'])} מ\"מ"
+                    )
                     fig.add_trace(go.Scatter(x=[x+st.session_state.off_x for x in ox]+[ox[0]+st.session_state.off_x], y=[y+st.session_state.off_y for y in oy]+[oy[0]+st.session_state.off_y], mode='lines', line=dict(color=color, width=2), hoverinfo="text", text=h_text_with_dims, hoveron='fills+points+points', showlegend=False))
                     eff_rk = b_cfg.get('rk_override', it['rk'])
                     s_p = calculate_path_v518(it['pts'], it['rad'], eff_rk, it['is_pocket'])
@@ -1614,7 +1851,7 @@ if upl_dxf:
                 dxf_order = [b['id'] for b in dxf_sorted_blocks]
 
                 # NC — אותה לוגיקה כמו MPR
-                dxf_nc = ['%', '(DARWISH 56.1 - DXF)', 'N10 G90 G54 G21 G17']
+                dxf_nc = ['%', '(DARWISH 57.9 - DXF)', 'N10 G90 G54 G21 G17']
                 dxf_n_c = 20; dxf_last_tool = None
 
                 if dxf_order:
@@ -1635,13 +1872,13 @@ if upl_dxf:
                                     dxf_nc, dxf_n_c, dxf_last_tool = write_block_at_depth(b_cfg, vb, zv_f, it, dxf_nc, dxf_n_c, dxf_last_tool)
 
                 dxf_nc.extend([f"N{dxf_n_c} M30", "%"])
-                st.download_button(f"📥 הורד NC (DXF — 56.0)",
+                st.download_button(f"📥 הורד NC (DXF — 57.9)",
                     "\n".join(dxf_nc), f"{dxf_file.name}.nc",
                     key=f"dl_dxf_{dxf_file.name}")
                 # --- ייצור CIX ל-DXF ---
                 dxf_cix_data = generate_cix_output(
                     dxf_order, dxf_block_configs, dxf_wp_l, dxf_wp_w, dxf_thick, {}, rotate)
-                st.download_button(f"📥 הורד CIX (DXF — 56.0)", dxf_cix_data,
+                st.download_button(f"📥 הורד CIX (DXF — 57.9)", dxf_cix_data,
                     f"{dxf_file.name}.cix", key=f"dl_cix_dxf_{dxf_file.name}")
 
             with col_vis_d:
@@ -1651,7 +1888,15 @@ if upl_dxf:
                     yaxis=dict(scaleanchor="x", scaleratio=1),
                     margin=dict(l=0,r=0,t=0,b=0), height=650)
                 # שולחן
-                fig_d.add_shape(type="rect", x0=0, y0=0, x1=1300, y1=3050,
+                MACHINE_TABLE = {'אלון': (1300, 3050)}
+                _base_w, _base_h = MACHINE_TABLE.get(st.session_state.get('active_machine', 'אבי'), (1300, 3050))
+                _dxf_board_w = (dxf_wp_w if rotate else dxf_wp_l) + st.session_state.off_x
+                _dxf_board_h = (dxf_wp_l if rotate else dxf_wp_w) + st.session_state.off_y
+                if _dxf_board_w > _dxf_board_h:
+                    _tbl_w, _tbl_h = max(_base_w, _base_h), min(_base_w, _base_h)
+                else:
+                    _tbl_w, _tbl_h = min(_base_w, _base_h), max(_base_w, _base_h)
+                fig_d.add_shape(type="rect", x0=0, y0=0, x1=_tbl_w, y1=_tbl_h,
                     line=dict(color="Gray", width=2), fillcolor="rgba(128,128,128,0.1)")
                 # פלטה (מנורמלת)
                 off_x_disp = st.session_state.off_x
@@ -1673,7 +1918,10 @@ if upl_dxf:
                     for it in v_block['paths']:
                         zv_calc = b_cfg['passes'][0] if b_cfg['passes'] else it['z']
                         ti_calc = round(dxf_thick - (zv_calc - it['z_off'] - st.session_state.gz), 3)
-                        h_text = f"<b>[{order_idx}] {v_block['t_cnc']}</b>: {v_block['desc']}<br>קוטר: {it['diam']} מ-מ<br>TI: {ti_calc:.3f} מ-מ"
+                        h_text = (
+                            f"<b>[{order_idx}] {v_block['t_cnc']}</b>: {v_block['desc']}<br>"
+                            f"קוטר: {it['diam']} מ\"מ | עומק: {ti_calc:.2f} מ\"מ"
+                        )
                         color = "red" if v_block['missing'] else ("green" if v_block['is_dr'] else ("red" if b_cfg['is_sep'] else "blue"))
                         if v_block['is_dr']:
                             r_c = it['diam'] / 2
@@ -1704,7 +1952,10 @@ if upl_dxf:
                             else:
                                 w_p = round(max(p[0] for p in pts_list)-min(p[0] for p in pts_list),1)
                                 h_p = round(max(p[1] for p in pts_list)-min(p[1] for p in pts_list),1)
-                            h_text2 = h_text + f"<br>📐 {w_p} × {h_p} מ-מ"
+                            h_text2 = (
+                                h_text +
+                                f"<br>📐 {w_p} × {h_p} מ\"מ | מסלול: {calc_path_length(it['pts'])} מ\"מ"
+                            )
                             fig_d.add_trace(go.Scatter(
                                 x=ox+[ox[0]], y=oy+[oy[0]],
                                 mode='lines', line=dict(color=color, width=2),
@@ -1721,3 +1972,119 @@ if upl_dxf:
                                 hoveron='fills+points', showlegend=False))
 
                 st.plotly_chart(fig_d, use_container_width=True, config={'scrollZoom': True})
+
+# ============================================================
+# לשוניות CIX — הדמיה של קבצי CIX קיימים
+# ============================================================
+if upl_cix:
+    st.divider()
+    st.subheader("🔵 קבצי CIX — הדמיה")
+    cix_tab_names = [f.name for f in upl_cix]
+    cix_tabs = st.tabs(cix_tab_names)
+
+    for cix_file, cix_tab in zip(upl_cix, cix_tabs):
+        with cix_tab:
+            cix_text = cix_file.getvalue().decode('utf-8', errors='ignore')
+            cix_data = parse_cix_for_display(cix_text)
+            lpx, lpy, lpz = cix_data['board']
+            drills  = cix_data['drills']
+            routes  = cix_data['routes']
+
+            st.info(
+                f"📐 {lpx} × {lpy} מ\"מ | עובי: {lpz} מ\"מ | "
+                f"קידוחים: {len(drills)} | מסלולים: {len(routes)}"
+            )
+
+            fig_cix = go.Figure()
+            fig_cix.update_layout(
+                dragmode='pan',
+                xaxis=dict(scaleanchor='y', scaleratio=1),
+                yaxis=dict(scaleanchor='x', scaleratio=1),
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=650,
+                plot_bgcolor='rgba(20,20,20,0.9)'
+            )
+
+            # שולחן + פלטה
+            # מידות השולחן מותאמות לכיוון הפלטה כפי שמגיעה מקובץ ה-CIX
+            MACHINE_TABLE_DIMS = {'אלון': (1300, 3050)}
+            _base_w, _base_h = MACHINE_TABLE_DIMS.get(st.session_state.get('active_machine', 'אבי'), (1300, 3050))
+            # אם הפלטה שוכבת (lpx > lpy) — גם השולחן מוצג שוכב
+            if lpx > 0 and lpy > 0 and lpx > lpy:
+                _tbl_w, _tbl_h = max(_base_w, _base_h), min(_base_w, _base_h)
+            else:
+                _tbl_w, _tbl_h = min(_base_w, _base_h), max(_base_w, _base_h)
+            fig_cix.add_shape(type='rect', x0=0, y0=0, x1=_tbl_w, y1=_tbl_h,
+                line=dict(color='Gray', width=2), fillcolor='rgba(128,128,128,0.1)')
+            if lpx > 0 and lpy > 0:
+                fig_cix.add_shape(type='rect', x0=0, y0=0, x1=lpx, y1=lpy,
+                    line=dict(color='Sienna', width=3), fillcolor='rgba(139,69,19,0.4)')
+
+            # קידוחים (BV) — עיגולים ירוקים
+            theta = np.linspace(0, 2*np.pi, 32)
+            for dr in drills:
+                r = dr['dia'] / 2
+                cx, cy = dr['x'], dr['y']
+                h_txt = (
+                    f"<b>קידוח {dr['id']}</b><br>"
+                    f"מיקום: ({cx:.1f}, {cy:.1f})<br>"
+                    f"קוטר: {dr['dia']} מ\"מ | עומק: {dr['dp']} מ\"מ"
+                )
+                fig_cix.add_trace(go.Scatter(
+                    x=list(cx + r*np.cos(theta)) + [None],
+                    y=list(cy + r*np.sin(theta)) + [None],
+                    mode='lines', line=dict(color='limegreen', width=1.5),
+                    fill='toself', fillcolor='rgba(0,200,0,0.25)',
+                    hoverinfo='text', text=h_txt, showlegend=False
+                ))
+
+            # מסלולי כרסום (ROUT) — קונטור + מסלול סכין
+            for rt in routes:
+                pts = rt['pts']
+                if not pts:
+                    continue
+                # צבע לפי CRC
+                crc = str(rt['crc'])
+                color = 'red' if crc == '2' else ('dodgerblue' if crc == '1' else 'orange')
+                crc_label = 'חיצוני (CRC=2)' if crc == '2' else ('פנימי (CRC=1)' if crc == '1' else 'על הקו (CRC=0)')
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                w_part = round(max(xs) - min(xs), 1)
+                h_part = round(max(ys) - min(ys), 1)
+                h_txt = (
+                    f"<b>ROUT {rt['id']}</b> | כלי: {rt['tnm']}<br>"
+                    f"קוטר: {rt['dia']} מ\"מ | עומק: {rt['dp']} מ\"מ<br>"
+                    f"כיוון: {crc_label}<br>"
+                    f"📐 {w_part} × {h_part} מ\"מ | מסלול: {rt['path_len']} מ\"מ"
+                )
+                # קונטור
+                fig_cix.add_trace(go.Scatter(
+                    x=xs + [xs[0]], y=ys + [ys[0]],
+                    mode='lines', line=dict(color=color, width=2),
+                    hoverinfo='text', text=h_txt,
+                    hoveron='fills+points', showlegend=False
+                ))
+                # מסלול סכין (קו צהוב מקווקו) — offset לפי CRC
+                rad = rt['dia'] / 2
+                if crc == '2':
+                    side = -1   # חיצוני = ימין = הרחק מהמרכז
+                elif crc == '1':
+                    side = 1    # פנימי = שמאל = קרב למרכז
+                else:
+                    side = 0
+                if side != 0 and len(pts) >= 2:
+                    tool_pts = calculate_path_v518(
+                        [[p[0], p[1]] for p in pts], rad,
+                        'WRKR' if side == -1 else 'WRKL', False
+                    )
+                    fig_cix.add_trace(go.Scatter(
+                        x=[p[0] for p in tool_pts] + [None],
+                        y=[p[1] for p in tool_pts] + [None],
+                        mode='lines+markers',
+                        marker=dict(size=3, opacity=0.5),
+                        line=dict(color='yellow', dash='dash', width=1),
+                        hoverinfo='text', text=h_txt,
+                        hoveron='fills+points', showlegend=False
+                    ))
+
+            st.plotly_chart(fig_cix, use_container_width=True, config={'scrollZoom': True})
