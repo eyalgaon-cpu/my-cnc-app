@@ -5,12 +5,15 @@ import pandas as pd
 import numpy as np
 from shapely.geometry import Polygon
 
-# Darwish 57.9 - MPR + DXF + CIX Support
+# Darwish 61.13 - MPR + DXF + CIX Support
+# 60.9: rerun בסוף הסקריפט — מונע DuplicateElementKey בשינוי Toggle עם קבצים טעונים
+#       NC נשמר לפי MPR מקורי (ops_original), CIX+הדמיה+ממשק לפי ops מעובדים
+# 60.9: היפוך מראה ציר Y ב-CIX | NESTING_12MM | מיון קטן→גדול
+# 59.0: פיצוי עובי חומר בפועל — שדה "עובי בפועל" בסיידבר, חישובי קידוחים ופוקטים ו-CIX מותאמים
+# 58.0: שם מכונה בכפתורי הורדה; בחירת כרסום 12מ"מ לפי עובי; בחירת מקדח 5מ"מ לפי עומק
 # 56.0: הוספת ייצוא CIX (SCM/Biesse Maestro), תיקון DS=1 בחישוב מרכז קשת
 # 54.0: שקלול קאנטים (Edge Banding)
-# 53.73: תיקון h_d_sq (floating point בסמי-קשת), offset ב-hover text
-# 53.70: תיקון DS off-by-one; 53.69: 128 נקודות + bbox אנליטי
-st.set_page_config(page_title="Darwish 57.9 Local", layout="wide")
+st.set_page_config(page_title="Darwish 61.13 Local", layout="wide")
 
 CONFIG_FILE = "darwish_config.json"
 
@@ -29,8 +32,8 @@ DEFAULT_TOOLS_ALON = [
     # --- כרסומים ---
     {"T_CNC": "VID_6",      "MPR_Name": "142",    "DXF_Name": "CUT 6",  "תיאור": "כרסום 6 מילימטר",                          "קוטר": 6.0,  "Z_Offset": 0.0, "RPM": 18000, "Feed": 12000},
     {"T_CNC": "VID_8",      "MPR_Name": "158",    "DXF_Name": "CUT 8",  "תיאור": "כרסום 8 מילימטר",                          "קוטר": 8.0,  "Z_Offset": 0.0, "RPM": 18000, "Feed": 12000},
-    {"T_CNC": "Di_12_mdf",  "MPR_Name": "128",    "DXF_Name": "CUT 12", "תיאור": "כרסום 12 מילימטר MDF (עם שואב, עד 19מ-מ)", "קוטר": 12.0, "Z_Offset": 0.0, "RPM": 24000, "Feed": 18000},
-    {"T_CNC": "Nesting_12", "MPR_Name": "MISSING","DXF_Name": "",       "תיאור": "כרסום 12 מילימטר נסטינג (עם שואב, עד 17מ-מ)","קוטר": 12.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 10000},
+    {"T_CNC": "DI_12_MDF",  "MPR_Name": "128",    "DXF_Name": "CUT 12", "תיאור": "כרסום 12 מילימטר MDF (עם שואב, עד 19מ-מ)", "קוטר": 12.0, "Z_Offset": 0.0, "RPM": 24000, "Feed": 18000},
+    {"T_CNC": "NESTING_12MM", "MPR_Name": "MISSING","DXF_Name": "",       "תיאור": "כרסום 12 מילימטר נסטינג (עם שואב, עד 17מ-מ)","קוטר": 12.0, "Z_Offset": 0.0, "RPM": 18000, "Feed": 10000},
 ]
 
 DEFAULT_TOOLS = [
@@ -68,7 +71,8 @@ def save_config_auto():
         "safety_h": st.session_state.get('safety_h', 35.0),
         "off_x": st.session_state.get('off_x', 0.0),
         "off_y": st.session_state.get('off_y', 0.0),
-        "gz": st.session_state.get('gz', 0.0)
+        "gz": st.session_state.get('gz', 0.0),
+        "actual_thick_override": st.session_state.get('actual_thick_override', 0.0)
     }
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=4, ensure_ascii=False)
@@ -84,6 +88,7 @@ def load_config_auto():
             st.session_state.off_x = cfg.get("off_x", 0.0)
             st.session_state.off_y = cfg.get("off_y", 0.0)
             st.session_state.gz = cfg.get("gz", 0.0)
+            st.session_state.actual_thick_override = cfg.get("actual_thick_override", 0.0)
             return True
     return False
 
@@ -157,14 +162,68 @@ with st.sidebar:
     off_x = st.number_input("הזזת פלטה ציר X (מילימטר)", value=st.session_state.get('off_x', 0.0), key='off_x_in')
     off_y = st.number_input("הזזת פלטה ציר Y (מילימטר)", value=st.session_state.get('off_y', 0.0), key='off_y_in')
     gz = st.number_input("תיקון Z גלובלי (מילימטר)", value=st.session_state.get('gz', 0.0), key='gz_in')
+    st.divider()
+    st.markdown("**📏 עובי חומר בפועל**")
+    actual_thick_override = st.number_input(
+        "עובי בפועל (0 = לפי MPR)",
+        value=st.session_state.get('actual_thick_override', 0.0),
+        min_value=0.0, step=0.1, format="%.1f",
+        key='actual_thick_in',
+        help="הזן את העובי האמיתי של הפלטה שקיבלת. 0 = השתמש בעובי מה-MPR."
+    )
 
     if (safety_h != st.session_state.get('safety_h') or off_x != st.session_state.get('off_x') or
-        off_y != st.session_state.get('off_y') or gz != st.session_state.get('gz')):
+        off_y != st.session_state.get('off_y') or gz != st.session_state.get('gz') or
+        actual_thick_override != st.session_state.get('actual_thick_override')):
         st.session_state.safety_h = safety_h
         st.session_state.off_x = off_x
         st.session_state.off_y = off_y
         st.session_state.gz = gz
+        st.session_state.actual_thick_override = actual_thick_override
         save_config_auto()
+
+    st.divider()
+    st.markdown("**🧠 התאמת פסיעות חכמה (CIX)**")
+    smart_passes_active = st.checkbox(
+        "הפעל פסיעות חכמות לניתוק חיצוני",
+        value=st.session_state.get('smart_passes_active', False),
+        key='smart_passes_cb',
+        help="כשפעיל: כרסומים חיצוניים (RI=1) מוחלפים לפי לוגיקת אלון. NC לא מושפע."
+    )
+    st.session_state.smart_passes_active = smart_passes_active
+
+    if smart_passes_active:
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            smart_min_edge = st.number_input(
+                "צלע קצרה מינימלית (מ\"מ)",
+                value=st.session_state.get('smart_min_edge', 160.0),
+                step=10.0, key='smart_min_edge_inp'
+            )
+            st.session_state.smart_min_edge = smart_min_edge
+        with col_s2:
+            smart_min_area = st.number_input(
+                "שטח מינימלי (מ\"מ²)",
+                value=st.session_state.get('smart_min_area', 9000.0),
+                step=500.0, key='smart_min_area_inp'
+            )
+            st.session_state.smart_min_area = smart_min_area
+    else:
+        smart_min_edge = st.session_state.get('smart_min_edge', 160.0)
+        smart_min_area = st.session_state.get('smart_min_area', 9000.0)
+
+# --- איפוס passes כשה-Toggle משנה מצב ---
+# משתמשים בדגל _need_rerun כדי שה-rerun יקרה רק בסוף הסקריפט,
+# אחרי שכל הלולאות של הקבצים סיימו — מונע DuplicateElementKey
+if 'prev_smart_passes' not in st.session_state:
+    st.session_state['prev_smart_passes'] = st.session_state.get('smart_passes_active', False)
+if st.session_state.get('smart_passes_active', False) != st.session_state['prev_smart_passes']:
+    keys_to_del = [k for k in list(st.session_state.keys())
+                   if k.startswith("passes_") or k.startswith("dxf_passes_")]
+    for k in keys_to_del:
+        del st.session_state[k]
+    st.session_state['prev_smart_passes'] = st.session_state.get('smart_passes_active', False)
+    st.session_state['_need_rerun_smart'] = True
 
 # --- 3. ליבה מתמטית v52.2 ---
 def _safe_float(val):
@@ -184,6 +243,44 @@ def find_tool_numeric(mpr_id, df):
                 return row, is_missing
     except: pass
     return {"T_CNC": "MISSING", "תיאור": f"כלי {mpr_id} לא מזוהה בטבלה", "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 2000}, True
+
+def find_tool_smart(t_mpr, df, thick=None, ti_val=None, tag=None):
+    """כמו find_tool_numeric אבל עם לוגיקה חכמה לפי הקשר (רק כשיש נתוני עובי/עומק):
+    • כרסום 12מ"מ: thick≤17 → NESTING_12MM | thick≤19 → DI_12_MDF
+    • מקדח 5מ"מ: חור עובר (ti≥thick-0.2) → SHPIZ | חלקי → רגיל"""
+    t_info, is_missing = find_tool_numeric(t_mpr, df)
+    if thick is None or is_missing:
+        return t_info, is_missing
+    tdb = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+
+    # בחירת כרסום 12מ"מ לפי עובי פלטה
+    if tag in ('105', '130', '181') and round(float(t_info.get('קוטר', 0)), 1) == 12.0:
+        if thick <= 17.0:
+            nesting = tdb[tdb['T_CNC'] == 'NESTING_12MM']
+            if not nesting.empty:
+                row = nesting.iloc[0]
+                return row, (row['T_CNC'] == 'MISSING')
+        # thick > 17: DI_12_MDF — כבר נמצא, ממשיכים
+
+    # בחירת מקדח 5מ"מ לפי עומק קידוח
+    if tag == '102' and ti_val is not None and round(float(t_info.get('קוטר', 0)), 1) == 5.0:
+        is_through = (ti_val >= thick - 0.2)
+        if is_through:
+            shpiz = tdb[tdb['T_CNC'].astype(str).str.contains('SHPIZ', na=False)]
+            if not shpiz.empty:
+                row = shpiz.iloc[0]
+                return row, (row['T_CNC'] == 'MISSING')
+        else:
+            regular = tdb[
+                (abs(tdb['קוטר'].astype(float) - 5.0) < 0.1) &
+                (~tdb['T_CNC'].astype(str).str.contains('SHPIZ', na=False)) &
+                (tdb['T_CNC'].astype(str) != 'MISSING')
+            ]
+            if not regular.empty:
+                row = regular.iloc[0]
+                return row, (row['T_CNC'] == 'MISSING')
+
+    return t_info, is_missing
 
 def calc_path_length(pts):
     """מחשב אורך מסלול בין רשימת נקודות (מילימטר)."""
@@ -462,6 +559,13 @@ def dxf_shapes_to_ops(layer_name, shapes, tool_db, rotate, wp_w, wp_l, thick, of
                                "קוטר": 6.0, "Z_Offset": 0.0, "RPM": 12000, "Feed": 2000})
         is_missing = True
 
+    # בחירת כרסום 12מ"מ לפי עובי פלטה (DI_12_MDF עד 19 | NESTING_12MM עד 17)
+    if round(float(tool_row.get('קוטר', 0)), 1) == 12.0 and thick <= 17.0:
+        nesting = tdb[tdb['T_CNC'] == 'NESTING_12MM']
+        if not nesting.empty:
+            tool_row = nesting.iloc[0]
+            is_missing = (tool_row['T_CNC'] == 'MISSING')
+
     kind  = identified['kind'] if identified else 'CUT'
     diam  = float(tool_row['קוטר'])
     rad   = diam / 2
@@ -491,7 +595,17 @@ def dxf_shapes_to_ops(layer_name, shapes, tool_db, rotate, wp_w, wp_l, thick, of
             drill_mask = tdb['MPR_Name'].apply(lambda v: '.' in str(v) and str(v).replace('.','').isdigit())
             match = tdb[drill_mask & (abs(tdb['קוטר'] - actual_diam) < 0.5)]
             if not match.empty:
-                t_row = match.iloc[0]
+                # בחירת מקדח 5מ"מ לפי עומק קידוח
+                if round(actual_diam, 1) == 5.0:
+                    is_through = (depth >= thick - 0.2)
+                    if is_through:
+                        shpiz = match[match['T_CNC'].astype(str).str.contains('SHPIZ', na=False)]
+                        t_row = shpiz.iloc[0] if not shpiz.empty else match.iloc[0]
+                    else:
+                        regular = match[~match['T_CNC'].astype(str).str.contains('SHPIZ', na=False)]
+                        t_row = regular.iloc[0] if not regular.empty else match.iloc[0]
+                else:
+                    t_row = match.iloc[0]
                 is_miss = (t_row['T_CNC'] == 'MISSING')
             else:
                 t_row = tool_row; is_miss = is_missing
@@ -740,18 +854,28 @@ def get_cix_entities(geo_text, rotate, wp_w, global_off_x, global_off_y):
     return entities
 
 
-def generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rotate):
+def generate_cix_output(order, block_configs, wp_l, wp_w, actual_thick, geo_texts, rotate):
     """מייצר קובץ CIX מלא לפורמט SCM/Biesse Maestro 5.0.
     לוגיקת גלים זהה ל-NC: כל הסבבים הלא-ניתוק קודם, אחר כך גל אחר גל על כל הניתוקים."""
     cix = ["BEGIN ID CIX\n\tREL= 5.0\nEND ID\n"]
     eff_lpx = wp_w if rotate else wp_l
     eff_lpy = wp_l if rotate else wp_w
-    cix.append(f"BEGIN MAINDATA\n\tLPX={eff_lpx}\n\tLPY={eff_lpy}\n\tLPZ={thick}\n\tORLST=\"0\"\nEND MAINDATA\n")
+    cix.append(f"BEGIN MAINDATA\n\tLPX={eff_lpx}\n\tLPY={eff_lpy}\n\tLPZ={actual_thick}\n\tORLST=\"0\"\nEND MAINDATA\n")
     cid = 1000
 
     # הפרדה: ניתוק vs לא-ניתוק — זהה ללוגיקת NC
     cutting_ids     = [b_id for b_id in order if block_configs[b_id]['is_sep']]
     non_cutting_ids = [b_id for b_id in order if not block_configs[b_id]['is_sep']]
+
+    # מיון cutting_ids: NESTING_12MM לפני VID_6 — מינימום חילופי כלים
+    def _tool_sort_key(b_id):
+        tnm = block_configs[b_id]['v_block']['t_cnc']
+        if tnm == 'NESTING_12MM': return 0
+        if tnm == 'DI_12_MDF':    return 1
+        if tnm == 'VID_6':        return 2
+        if tnm == 'VID_8':        return 3
+        return 4
+    cutting_ids = sorted(cutting_ids, key=_tool_sort_key)
 
     def _write_block(b_cfg, z_val):
         nonlocal cid
@@ -759,13 +883,14 @@ def generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rota
         it = v_block['paths'][0]
         t_name = v_block['t_cnc']
         eff_rk = b_cfg.get('rk_override', it.get('rk', 'WRKL'))
+        # CRC לפי כיוון כרסום: WRKR = חיצוני = 2, WRKL = פנימי = 1
         if eff_rk == 'WRKR':
             crc_val = 2
         elif eff_rk == 'WRKL':
             crc_val = 1
         else:
             crc_val = 0
-        dp_val = round(thick - z_val, 3)
+        dp_val = round(actual_thick - z_val, 3)
         if v_block['is_dr']:
             for drill_op in v_block['paths']:
                 pt = drill_op['pts'][0]
@@ -775,13 +900,13 @@ def generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rota
                     f"\tPARAM,NAME=SIDE,VALUE=0\n"
                     f"\tPARAM,NAME=CRN,VALUE=\"1\"\n"
                     f"\tPARAM,NAME=X,VALUE={pt[0]+st.session_state.off_x:.2f}\n"
-                    f"\tPARAM,NAME=Y,VALUE={pt[1]+st.session_state.off_y:.2f}\n"
+                    f"\tPARAM,NAME=Y,VALUE={eff_lpy - (pt[1]+st.session_state.off_y):.2f}\n"
                     f"\tPARAM,NAME=Z,VALUE=0\n"
                     f"\tPARAM,NAME=DP,VALUE={dp_val}\n"
                     f"\tPARAM,NAME=DIA,VALUE={it['diam']}\n"
                     f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
                     f"\tPARAM,NAME=LAY,VALUE=\"BG\"\n"
-                    f"\tPARAM,NAME=TTP,VALUE={1 if dp_val >= thick - 0.2 else 0}\n"
+                    f"\tPARAM,NAME=TTP,VALUE={1 if dp_val >= actual_thick - 0.2 else 0}\n"
                     f"\tPARAM,NAME=OPT,VALUE=1\n"
                     f"END MACRO\n"
                 )
@@ -794,7 +919,7 @@ def generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rota
                 f"\tPARAM,NAME=CRN,VALUE=\"1\"\n"
                 f"\tPARAM,NAME=DP,VALUE={dp_val}\n"
                 f"\tPARAM,NAME=DIA,VALUE={it['diam']}\n"
-                f"\tPARAM,NAME=WSP,VALUE={int(it.get('s', 12000))}\n"
+                f"\tPARAM,NAME=WSP,VALUE={int(it.get('f', 10000))}\n"
                 f"\tPARAM,NAME=SHP,VALUE=0\n"
                 f"\tPARAM,NAME=CRC,VALUE={crc_val}\n"
                 f"\tPARAM,NAME=TIN,VALUE=7\n"
@@ -861,7 +986,7 @@ def generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rota
                         f"BEGIN MACRO\n\tNAME=START_POINT\n"
                         f"\tPARAM,NAME=ID,VALUE=\"{cid}\"\n"
                         f"\tPARAM,NAME=X,VALUE={ent['x']:.2f}\n"
-                        f"\tPARAM,NAME=Y,VALUE={ent['y']:.2f}\n"
+                        f"\tPARAM,NAME=Y,VALUE={eff_lpy - ent['y']:.2f}\n"
                         f"\tPARAM,NAME=Z,VALUE=0\n"
                         f"END MACRO\n"
                     )
@@ -870,22 +995,24 @@ def generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rota
                         f"BEGIN MACRO\n\tNAME=LINE_EP\n"
                         f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
                         f"\tPARAM,NAME=XE,VALUE={ent['x']:.2f}\n"
-                        f"\tPARAM,NAME=YE,VALUE={ent['y']:.2f}\n"
+                        f"\tPARAM,NAME=YE,VALUE={eff_lpy - ent['y']:.2f}\n"
                         f"\tPARAM,NAME=ZS,VALUE=0\n"
                         f"\tPARAM,NAME=ZE,VALUE=0\n"
                         f"END MACRO\n"
                     )
                 elif ent['type'] == 'ARC':
+                    # היפוך Y + מרכז קשת + כיוון עקב מראה ציר Y
+                    arc_dir_mirrored = 'dirCCW' if ent['dir'] == 'dirCW' else 'dirCW'
                     cix.append(
                         f"BEGIN MACRO\n\tNAME=ARC_EPCE\n"
                         f"\tPARAM,NAME=ID,VALUE={cid}\n"
                         f"\tPARAM,NAME=XE,VALUE={ent['x']:.2f}\n"
-                        f"\tPARAM,NAME=YE,VALUE={ent['y']:.2f}\n"
+                        f"\tPARAM,NAME=YE,VALUE={eff_lpy - ent['y']:.2f}\n"
                         f"\tPARAM,NAME=XC,VALUE={ent['cx']:.2f}\n"
-                        f"\tPARAM,NAME=YC,VALUE={ent['cy']:.2f}\n"
+                        f"\tPARAM,NAME=YC,VALUE={eff_lpy - ent['cy']:.2f}\n"
                         f"\tPARAM,NAME=ZS,VALUE=0\n"
                         f"\tPARAM,NAME=ZE,VALUE=0\n"
-                        f"\tPARAM,NAME=DIR,VALUE={ent['dir']}\n"
+                        f"\tPARAM,NAME=DIR,VALUE={arc_dir_mirrored}\n"
                         f"END MACRO\n"
                     )
             if entities and not it['is_pocket']:
@@ -896,7 +1023,7 @@ def generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rota
                         f"BEGIN MACRO\n\tNAME=LINE_EP\n"
                         f"\tPARAM,NAME=ID,VALUE=\"P{cid}\"\n"
                         f"\tPARAM,NAME=XE,VALUE={start_ent['x']:.2f}\n"
-                        f"\tPARAM,NAME=YE,VALUE={start_ent['y']:.2f}\n"
+                        f"\tPARAM,NAME=YE,VALUE={eff_lpy - start_ent['y']:.2f}\n"
                         f"\tPARAM,NAME=ZS,VALUE=0\n"
                         f"\tPARAM,NAME=ZE,VALUE=0\n"
                         f"END MACRO\n"
@@ -1027,7 +1154,7 @@ def parse_cix_for_display(text):
     return result
 
 
-st.title("🏭 דרוויש 57.9 - MPR + DXF + CIX")
+st.title("🏭 דרוויש 61.13 - MPR + DXF + CIX")
 
 # הגדרות גלובליות בשורה אחת
 col_g1, col_g2, col_g3, col_g4 = st.columns([1, 1, 1, 2])
@@ -1124,6 +1251,35 @@ if upl:
         mpr = f_file.getvalue().decode('utf-8', errors='ignore')
         wp_match = re.search(r'\[001(.*?)\]', mpr, re.DOTALL); wp_block = wp_match.group(1) if wp_match else ""
         wp_l, wp_w = get_f('l', wp_block, 2440.0), get_f('w', wp_block, 1220.0); thick = get_f('t', mpr, 19.0)
+        # עובי בפועל: מה-session_state אם הוזן, אחרת מה-MPR
+        _ato = st.session_state.get('actual_thick_override', 0.0)
+        actual_thick = _ato if _ato > 0 else thick
+
+        # --- עדכון passes כשעובי בפועל משתנה ---
+        # עיבודים עיוורים (z > 0.2): Z מוחלט מוסט בדלתא כדי לשמור עומק קבוע מהמשטח
+        # חיתוכים עוברים (z ≤ 0.2): Z מוחלט נשאר קבוע (מיקום ביחס לשולחן)
+        _prev_thick_key = f"prev_actual_thick_{f_file.name}"
+        _prev_at = st.session_state.get(_prev_thick_key)
+        if _prev_at is None:
+            st.session_state[_prev_thick_key] = actual_thick  # אתחול ראשון
+        elif abs(_prev_at - actual_thick) > 0.001:
+            _delta = actual_thick - _prev_at
+            # עדכן passes של כל הבלוקים
+            _pass_keys = [k for k in list(st.session_state.keys())
+                          if k.startswith("passes_") and k.endswith(f"_{f_file.name}")
+                          and isinstance(st.session_state[k], list)]
+            for _pk in _pass_keys:
+                st.session_state[_pk] = [
+                    round(z + _delta, 3) if z > 0.2 else z
+                    for z in st.session_state[_pk]
+                ]
+            # מחק z-inputs בודדים — ייווצרו מחדש מה-passes המעודכנים
+            _z_keys = [k for k in list(st.session_state.keys())
+                       if k.startswith("z_") and k.endswith(f"_{f_file.name}")]
+            for _zk in _z_keys:
+                del st.session_state[_zk]
+            st.session_state[_prev_thick_key] = actual_thick
+            st.rerun()
 
         geos = {}
         parts = re.split(r'\](\d+)', mpr)
@@ -1139,19 +1295,25 @@ if upl:
         for m in re.finditer(r'<(102|105|112|130|181)(.*?)(?=<|\!|\[H)', mpr, re.DOTALL):
             tag, bc = m.group(1), m.group(2)
             t_mpr = re.search(r'(?:TNO|T_|DU)="?([^"\\s]+)"?', bc).group(1).strip() if re.search(r'(?:TNO|T_|DU)="?([^"\\s]+)"?', bc) else "142"
-            t_info, is_missing = find_tool_numeric(t_mpr, tool_db)
-            ti_val = get_f('TI', bc); z_abs = round((thick - ti_val), 3) if tag in ['102', '181', '112'] else round(get_f('ZA', bc), 3)
+            ti_val = get_f('TI', bc)
+            if tag in ['102', '181', '112']:
+                z_abs = round((actual_thick - ti_val), 3)
+            else:
+                _za = get_f('ZA', bc)
+                _delta = actual_thick - thick
+                z_abs = round(_za + _delta, 3) if _za > 0.2 else round(_za, 3)
+            t_info, is_missing = find_tool_smart(t_mpr, tool_db, actual_thick, ti_val, tag)
 
             if tag == '102':
                 xa, ya, an, ab, xr, yr = get_f('XA', bc), get_f('YA', bc), int(get_f('AN', bc, 1)), get_f('AB', bc, 0.0), get_f('XR', bc, 1.0), get_f('YR', bc, 0.0)
                 for i in range(an):
                     curr_xa, curr_ya = xa + (i*ab*xr), ya + (i*ab*yr)
-                    ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': ti_val, 'z_off': t_info['Z_Offset'], 'pts': [[wp_w - curr_ya, curr_xa]] if rotate else [[curr_xa, curr_ya]], 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': f"DRILL_{round(curr_xa,1)}", 'rk': "WRKL", 'is_pocket': False, 'missing': is_missing, 'orig_w': 0, 'orig_h': 0})
+                    ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': ti_val, 'z_off': t_info['Z_Offset'], 'pts': [[wp_w - curr_ya, curr_xa]] if rotate else [[curr_xa, curr_ya]], 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': f"DRILL_{round(curr_xa,1)}", 'rk': "WRKL", 'is_pocket': False, 'missing': is_missing, 'orig_w': 0, 'orig_h': 0, 'is_external': False})
             elif tag == '112':
                 xa, ya, la, br, wi = get_f('XA', bc), get_f('YA', bc), get_f('LA', bc), get_f('BR', bc), get_f('WI', bc)
                 rect_local = [(-la/2, -br/2), (la/2, -br/2), (la/2, br/2), (-la/2, br/2), (-la/2, -br/2)]
                 f_pts = [[wp_w - (rotate_pt_v518(px, py, wi)[1] + ya), rotate_pt_v518(px, py, wi)[0] + xa] if rotate else [rotate_pt_v518(px, py, wi)[0] + xa, rotate_pt_v518(px, py, wi)[1] + ya] for px, py in rect_local]
-                ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': ti_val, 'z_off': t_info['Z_Offset'], 'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': "TASCHE", 'rk': "WRKL", 'is_pocket': True, 'missing': is_missing, 'orig_w': round(la, 2), 'orig_h': round(br, 2)})
+                ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': ti_val, 'z_off': t_info['Z_Offset'], 'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': "TASCHE", 'rk': "WRKL", 'is_pocket': True, 'missing': is_missing, 'orig_w': round(la, 2), 'orig_h': round(br, 2), 'is_external': False})
             else:
                 geoid = re.search(r'EA="?(\d+):?', bc).group(1).strip() if re.search(r'EA="?(\d+):?', bc) else "FREE"
                 f_pts = geos.get(geoid) if geos.get(geoid) else [[wp_w - get_f('YA', bc), get_f('XA', bc)] if rotate else [get_f('XA', bc), get_f('YA', bc)]]
@@ -1160,7 +1322,87 @@ if upl:
                     _orig_w, _orig_h = _geo_analytical_bbox(_geo_txt)
                 else:
                     _orig_w = 0; _orig_h = 0
-                ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': thick-z_abs, 'z_off': t_info['Z_Offset'], 'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': geoid, 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else ("WRKR" if re.search(r'RI="1"', bc) else "WRKL"), 'is_pocket': (tag == '181'), 'missing': is_missing, 'orig_w': _orig_w, 'orig_h': _orig_h})
+                _is_external = bool(re.search(r'RI="1"', bc))
+                ops.append({'t_cnc': t_info['T_CNC'], 'desc': t_info['תיאור'], 'z': z_abs, 'ti': actual_thick-z_abs, 'z_off': t_info['Z_Offset'], 'pts': f_pts, 'rad': t_info['קוטר']/2, 'diam': t_info['קוטר'], 'f': t_info['Feed'], 's': t_info['RPM'], 'type': tag, 'ea': geoid, 'rk': re.search(r'RK="([^"]*)"', bc).group(1) if re.search(r'RK="([^"]*)"', bc) else ("WRKR" if re.search(r'RI="1"', bc) else "WRKL"), 'is_pocket': (tag == '181'), 'missing': is_missing, 'orig_w': _orig_w, 'orig_h': _orig_h, 'is_external': _is_external})
+
+        # --- שמירת ops מקוריים לייצור NC (Toggle לא משפיע על NC) ---
+        ops_original = [op.copy() for op in ops]
+
+        # --- לוגיקת התאמת פסיעות חכמה (משפיע על ממשק + הדמיה + CIX) ---
+        if st.session_state.get('smart_passes_active', False):
+            _min_edge = st.session_state.get('smart_min_edge', 160.0)
+            _min_area = st.session_state.get('smart_min_area', 9000.0)
+
+            def _get_tool(tcnc_name):
+                tdb = tool_db if isinstance(tool_db, pd.DataFrame) else pd.DataFrame(tool_db)
+                row = tdb[tdb['T_CNC'] == tcnc_name]
+                if not row.empty: return row.iloc[0], False
+                return pd.Series({'T_CNC': tcnc_name, 'תיאור': f'{tcnc_name}', 'קוטר': 12.0,
+                                  'Z_Offset': 0.0, 'RPM': 18000, 'Feed': 10000}), True
+
+            ext_ops = []
+            new_ops = []
+            for op in ops:
+                if op.get('is_external') and not op.get('is_pocket', False) and op.get('type') != '102':
+                    ext_ops.append(op)
+                else:
+                    new_ops.append(op)
+
+            # קיבוץ לפי מרכז גיאומטרי — פותר את בעיית הגיאומטריות המקוטעות
+            parts_groups = []
+            for op in ext_ops:
+                pts = op['pts']
+                if not pts: continue
+                xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+                cx = (max(xs) + min(xs)) / 2
+                cy = (max(ys) + min(ys)) / 2
+                found = False
+                for grp in parts_groups:
+                    gcx, gcy = grp['center']
+                    if abs(cx - gcx) < 10.0 and abs(cy - gcy) < 10.0:
+                        grp['ops'].append(op); found = True; break
+                if not found:
+                    parts_groups.append({'center': (cx, cy), 'ops': [op]})
+
+            # שליפת המסלול הארוך ביותר ובניית הכלים החדשים
+            for grp in parts_groups:
+                best_op = max(grp['ops'], key=lambda o: (calc_path_length(o['pts']), 1 if o['z'] <= 0.2 else 0))
+                ow = best_op.get('orig_w', 0); oh = best_op.get('orig_h', 0)
+                if ow == 0 or oh == 0:
+                    xs = [p[0] for p in best_op['pts']]; ys = [p[1] for p in best_op['pts']]
+                    ow = max(xs) - min(xs); oh = max(ys) - min(ys)
+
+                is_large = (min(ow, oh) >= _min_edge and (ow * oh) >= _min_area)
+
+                if is_large:
+                    t, miss = _get_tool('NESTING_12MM')
+                    op_new = best_op.copy()
+                    op_new.update({'t_cnc': t['T_CNC'], 'desc': t['תיאור'],
+                                   'diam': float(t['קוטר']), 'rad': float(t['קוטר'])/2,
+                                   's': float(t['RPM']), 'f': float(t['Feed']),
+                                   'z': -0.25, 'ti': actual_thick + 0.25, 'missing': miss})
+                    new_ops.append(op_new)
+                else:
+                    # פסיעה 1: NESTING_12MM — is_smart_skin=True כדי להיכנס ללוגיקת הגלים
+                    t12, miss12 = _get_tool('NESTING_12MM')
+                    op_p1 = best_op.copy()
+                    op_p1.update({'t_cnc': t12['T_CNC'], 'desc': t12['תיאור'],
+                                  'diam': float(t12['קוטר']), 'rad': float(t12['קוטר'])/2,
+                                  's': float(t12['RPM']), 'f': float(t12['Feed']),
+                                  'z': 1.0, 'ti': actual_thick - 1.0, 'missing': miss12,
+                                  'is_smart_skin': True})
+                    new_ops.append(op_p1)
+
+                    # פסיעה 2: VID_6 ניתוק
+                    t6, miss6 = _get_tool('VID_6')
+                    op_p2 = best_op.copy()
+                    op_p2.update({'t_cnc': t6['T_CNC'], 'desc': t6['תיאור'],
+                                  'diam': float(t6['קוטר']), 'rad': float(t6['קוטר'])/2,
+                                  's': float(t6['RPM']), 'f': float(t6['Feed']),
+                                  'z': -0.25, 'ti': actual_thick + 0.25, 'missing': miss6})
+                    new_ops.append(op_p2)
+
+            ops = new_ops
 
         if flip_180:
             nc_bx = wp_w if rotate else wp_l
@@ -1182,7 +1424,9 @@ if upl:
         blocks_list = []
         for v_key, v_block in visual_blocks.items():
             z_vals = sorted(list(set(p['z'] for p in v_block['paths'])), reverse=True)
-            is_sep = any(z <= 0.2 for z in z_vals)
+            # is_smart_skin: פסיעת ביניים חכמה שחייבת להיכנס ללוגיקת הגלים
+            has_smart_skin = any(p.get('is_smart_skin', False) for p in v_block['paths'])
+            is_sep = any(z <= 0.2 for z in z_vals) or has_smart_skin
             blocks_list.append((v_key, v_block, z_vals, is_sep))
 
         # שלב 2: קיבוץ - כלים לא-ניתוק לפי כלי, ניתוק בסוף
@@ -1207,16 +1451,19 @@ if upl:
                 ordered_blocks.extend(tool_groups[t])
         ordered_blocks.extend(sep_blocks)
 
-        # שלב 4: חישוב def_idx לפי שטח החלק (קטן לגדול), ניתוקים תמיד בסוף
+        # שלב 4: חישוב def_idx לפי צלע קצרה (קטן לגדול), שטח כמיון משני, ניתוקים תמיד בסוף
         def_idx_map = {}
         sep_counter = 1000
         reg_counter = 10
-        # מיין חלקים לא-ניתוק לפי שטח (orig_w × orig_h)
+        # מיין חלקים לא-ניתוק לפי צלע קצרה ואז שטח
         non_sep_items = [item for item in ordered_blocks if not item[3]]
         sep_items     = [item for item in ordered_blocks if item[3]]
         non_sep_items_sorted = sorted(
             non_sep_items,
-            key=lambda item: (item[1].get('orig_w', 0) * item[1].get('orig_h', 0))
+            key=lambda item: (
+                min(item[1].get('orig_w', 0), item[1].get('orig_h', 0)),
+                item[1].get('orig_w', 0) * item[1].get('orig_h', 0)
+            )
         )
         for item in non_sep_items_sorted:
             def_idx_map[item[0]] = reg_counter
@@ -1245,7 +1492,9 @@ if upl:
 
         with col_cfg:
             info = st.session_state.file_info[f_file.name]
-            st.info(f"📐 {info['l']} × {info['w']} מילימטר | עובי: {info['t']} מילימטר | חלקים: {info['n_parts']}")
+            _at = st.session_state.get('actual_thick_override', 0.0)
+            _thick_display = f"{info['t']} מ\"מ" if _at <= 0 else f"{info['t']} מ\"מ ← **בפועל: {_at} מ\"מ**"
+            st.info(f"📐 {info['l']} × {info['w']} מילימטר | עובי: {_thick_display} | חלקים: {info['n_parts']}")
 
             # כפתור איפוס סדר כרסום
             if st.button("🔄 אפס סדר (קטן לגדול)", key=f"reset_order_{f_file.name}"):
@@ -1264,7 +1513,7 @@ if upl:
                             if pass_key not in st.session_state:
                                 st.session_state[pass_key] = [float(z) for z in z_vals]
                             def_idx = def_idx_map.get(v_key, 500 + i*10)
-                            is_sep_val = any(z <= 0.2 for z in st.session_state.get(pass_key, z_vals))
+                            is_sep_val = any(z <= 0.2 for z in st.session_state.get(pass_key, z_vals)) or any(p.get('is_smart_skin', False) for p in v_block['paths'])
                             active_key = f"active_{i}_{f_file.name}"
                             if active_key not in st.session_state:
                                 st.session_state[active_key] = not v_block['missing']
@@ -1275,7 +1524,7 @@ if upl:
 
                         for i, v_key, v_block, z_vals, is_sep_val, def_idx, pass_key, current_idx in all_blocks_sorted:
                             current_passes_for_icon = st.session_state.get(pass_key, z_vals)
-                            is_sep_val = any(z <= 0.2 for z in current_passes_for_icon)
+                            is_sep_val = any(z <= 0.2 for z in current_passes_for_icon) or any(p.get('is_smart_skin', False) for p in v_block['paths'])
                             z_str = " → ".join([str(z) for z in current_passes_for_icon])
                             sep_icon = "🔴" if is_sep_val else "🔵"
                             missing_icon = "❌ " if v_block['missing'] else ""
@@ -1368,7 +1617,7 @@ if upl:
                                             st.rerun()
                                     st.session_state[geo_off_key] = new_geo_off
                                 if f_z: st.session_state[pass_key] = f_z
-                                is_sep_val = any(z <= 0.2 for z in f_z)
+                                is_sep_val = any(z <= 0.2 for z in f_z) or any(p.get('is_smart_skin', False) for p in v_block['paths'])
                                 if not v_block['is_dr']:
                                     # Store original bbox before offsets (for edge banding figure)
                                     if is_sep_val:
@@ -1403,43 +1652,59 @@ if upl:
             sorted_blocks = sorted([bc for bc in block_configs if bc['active']], key=lambda x: x['order_idx'])
             order = [b['id'] for b in sorted_blocks]
 
-        # --- ייצור NC ---
-        nc = ["%", "(DARWISH 57.9 - MPR + DXF)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        # --- ייצור NC — תמיד מ-ops_original (לא מושפע מהתאמת פסיעות חכמה) ---
+        nc = ["%", "(DARWISH 60.9 - MPR + DXF)", f"N10 G90 G54 G21 G17"]; n_c = 20
         last_tool_id = None
 
-        pass  # write_block_at_depth מוגדרת ברמת המודול
+        # בניית visual_blocks ו-block_configs מה-ops המקוריים לצורך NC
+        _nc_visual_blocks = {}
+        for op in ops_original:
+            v_key = (op['t_cnc'], op['type'], tuple(tuple(p) for p in op['pts'])) if op['type'] != '102' else (op['t_cnc'], op['type'])
+            if v_key not in _nc_visual_blocks:
+                _nc_visual_blocks[v_key] = {'t_cnc': op['t_cnc'], 'desc': op['desc'], 'type': op['type'],
+                                             'is_dr': op['type'] == '102', 'paths': [],
+                                             's': op['s'], 'f': op['f'], 'diam': op['diam'],
+                                             'ea_id': op['ea'], 'missing': op.get('missing', False),
+                                             'orig_w': op.get('orig_w', 0), 'orig_h': op.get('orig_h', 0)}
+            _nc_visual_blocks[v_key]['paths'].append(op)
 
-        if order:
-            # הפרדה: בלוקים עם ניתוק vs בלי ניתוק
-            # בלוק "עם ניתוק" = יש לו לפחות פסיעה אחת ≤ 0.2
-            cutting_ids = [b_id for b_id in order if block_configs[b_id]['is_sep']]
-            non_cutting_ids = [b_id for b_id in order if not block_configs[b_id]['is_sep']]
+        _nc_block_configs = {}
+        for i, (vk, vb) in enumerate(_nc_visual_blocks.items()):
+            z_vals = sorted(list(set(p['z'] for p in vb['paths'])), reverse=True)
+            is_sep = any(z <= 0.2 for z in z_vals)
+            _nc_block_configs[i] = {'id': i, 'active': True, 'order_idx': i*10,
+                                     'passes': z_vals, 'orig_z': z_vals,
+                                     'v_block': vb, 'is_sep': is_sep,
+                                     'rk_override': vb['paths'][0].get('rk', 'WRKL'), 'geo_off': 0.0}
+        _nc_order = list(_nc_block_configs.keys())
+        _nc_cutting = [b for b in _nc_order if _nc_block_configs[b]['is_sep']]
+        _nc_non_cutting = [b for b in _nc_order if not _nc_block_configs[b]['is_sep']]
 
-            # שלב 1: בלוקים ללא ניתוק - כל הפסיעות שלהם רצות ברצף
-            for b_id in non_cutting_ids:
-                b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
-                it = v_block['paths'][0]
-                for zv in b_cfg['passes']:
-                    zv_final = zv - it['z_off'] - st.session_state.gz
-                    nc, n_c, last_tool_id = write_block_at_depth(b_cfg, v_block, zv_final, it, nc, n_c, last_tool_id)
-
-            # שלב 2: בלוקים עם ניתוק - לוגיקת גלים (כל הפסיעות חוץ מהאחרונה על כולם, ואז ניתוק)
-            if cutting_ids:
-                max_waves = max(len(block_configs[b_id]['passes']) for b_id in cutting_ids)
-                for wave_idx in range(max_waves):
-                    for b_id in cutting_ids:
-                        b_cfg = block_configs[b_id]; v_block = b_cfg['v_block']
-                        if wave_idx < len(b_cfg['passes']):
-                            it = v_block['paths'][0]
-                            zv_final = b_cfg['passes'][wave_idx] - it['z_off'] - st.session_state.gz
-                            nc, n_c, last_tool_id = write_block_at_depth(b_cfg, v_block, zv_final, it, nc, n_c, last_tool_id)
+        for b_id in _nc_non_cutting:
+            b_cfg = _nc_block_configs[b_id]; v_block = b_cfg['v_block']
+            it = v_block['paths'][0]
+            for zv in b_cfg['passes']:
+                zv_final = zv - it['z_off'] - st.session_state.gz
+                nc, n_c, last_tool_id = write_block_at_depth(b_cfg, v_block, zv_final, it, nc, n_c, last_tool_id)
+        if _nc_cutting:
+            max_waves = max(len(_nc_block_configs[b]['passes']) for b in _nc_cutting)
+            for wave_idx in range(max_waves):
+                for b_id in _nc_cutting:
+                    b_cfg = _nc_block_configs[b_id]; v_block = b_cfg['v_block']
+                    if wave_idx < len(b_cfg['passes']):
+                        it = v_block['paths'][0]
+                        zv_final = b_cfg['passes'][wave_idx] - it['z_off'] - st.session_state.gz
+                        nc, n_c, last_tool_id = write_block_at_depth(b_cfg, v_block, zv_final, it, nc, n_c, last_tool_id)
 
         nc.extend([f"N{n_c} M30", "%"])
         with col_cfg:
-            st.download_button(f"📥 הורד NC (גרסה 57.9)", "\n".join(nc), f"{f_file.name}.nc")
-            # --- ייצור CIX ---
-            cix_data = generate_cix_output(order, block_configs, wp_l, wp_w, thick, geo_texts, rotate)
-            st.download_button(f"📥 הורד CIX (גרסה 57.9)", cix_data, f"{f_file.name}.cix",
+            st.download_button(f"📥 הורד NC — {st.session_state.get('active_machine','?')} (60.9)", "\n".join(nc), f"{f_file.name}.nc")
+            # --- ייצור CIX — מ-block_configs המעובדים (כולל התאמת פסיעות חכמה) ---
+            if order:
+                cix_data = generate_cix_output(order, block_configs, wp_l, wp_w, actual_thick, geo_texts, rotate)
+            else:
+                cix_data = generate_cix_output([], {}, wp_l, wp_w, actual_thick, geo_texts, rotate)
+            st.download_button(f"📥 הורד CIX — {st.session_state.get('active_machine','?')} (60.9)", cix_data, f"{f_file.name}.cix",
                                key=f"dl_cix_{f_file.name}")
 
         # שמירת הגרף ב-session_state
@@ -1468,7 +1733,7 @@ if upl:
                         zv_calc = b_cfg['passes'][idx]
                     elif b_cfg['passes']:
                         zv_calc = b_cfg['passes'][-1]
-                ti_calc = round(thick - (zv_calc - it['z_off'] - st.session_state.gz), 3)
+                ti_calc = round(actual_thick - (zv_calc - it['z_off'] - st.session_state.gz), 3)
                 h_text = (
                     f"<b>[{order_idx}] {v_block['t_cnc']}</b>: {v_block['desc']}<br>"
                     f"קוטר: {it['diam']} מ\"מ | עומק: {ti_calc:.2f} מ\"מ"
@@ -1851,7 +2116,7 @@ if upl_dxf:
                 dxf_order = [b['id'] for b in dxf_sorted_blocks]
 
                 # NC — אותה לוגיקה כמו MPR
-                dxf_nc = ['%', '(DARWISH 57.9 - DXF)', 'N10 G90 G54 G21 G17']
+                dxf_nc = ['%', '(DARWISH 60.9 - DXF)', 'N10 G90 G54 G21 G17']
                 dxf_n_c = 20; dxf_last_tool = None
 
                 if dxf_order:
@@ -1872,13 +2137,13 @@ if upl_dxf:
                                     dxf_nc, dxf_n_c, dxf_last_tool = write_block_at_depth(b_cfg, vb, zv_f, it, dxf_nc, dxf_n_c, dxf_last_tool)
 
                 dxf_nc.extend([f"N{dxf_n_c} M30", "%"])
-                st.download_button(f"📥 הורד NC (DXF — 57.9)",
+                st.download_button(f"📥 הורד NC (DXF) — {st.session_state.get('active_machine','?')} (60.9)",
                     "\n".join(dxf_nc), f"{dxf_file.name}.nc",
                     key=f"dl_dxf_{dxf_file.name}")
                 # --- ייצור CIX ל-DXF ---
                 dxf_cix_data = generate_cix_output(
                     dxf_order, dxf_block_configs, dxf_wp_l, dxf_wp_w, dxf_thick, {}, rotate)
-                st.download_button(f"📥 הורד CIX (DXF — 57.9)", dxf_cix_data,
+                st.download_button(f"📥 הורד CIX (DXF) — {st.session_state.get('active_machine','?')} (60.9)", dxf_cix_data,
                     f"{dxf_file.name}.cix", key=f"dl_cix_dxf_{dxf_file.name}")
 
             with col_vis_d:
@@ -2021,13 +2286,16 @@ if upl_cix:
                     line=dict(color='Sienna', width=3), fillcolor='rgba(139,69,19,0.4)')
 
             # קידוחים (BV) — עיגולים ירוקים
+            # הקואורדינטות בקובץ CIX הן קואורדינטות מכונה (אחרי Y-mirror).
+            # כדי להציג נכון, מחזירים: y_display = lpy - y_machine
             theta = np.linspace(0, 2*np.pi, 32)
             for dr in drills:
                 r = dr['dia'] / 2
-                cx, cy = dr['x'], dr['y']
+                cx = dr['x']
+                cy = lpy - dr['y']  # היפוך Y חזרה לתצוגה
                 h_txt = (
                     f"<b>קידוח {dr['id']}</b><br>"
-                    f"מיקום: ({cx:.1f}, {cy:.1f})<br>"
+                    f"מיקום: ({cx:.1f}, {dr['y']:.1f})<br>"
                     f"קוטר: {dr['dia']} מ\"מ | עומק: {dr['dp']} מ\"מ"
                 )
                 fig_cix.add_trace(go.Scatter(
@@ -2048,7 +2316,7 @@ if upl_cix:
                 color = 'red' if crc == '2' else ('dodgerblue' if crc == '1' else 'orange')
                 crc_label = 'חיצוני (CRC=2)' if crc == '2' else ('פנימי (CRC=1)' if crc == '1' else 'על הקו (CRC=0)')
                 xs = [p[0] for p in pts]
-                ys = [p[1] for p in pts]
+                ys = [lpy - p[1] for p in pts]  # היפוך Y חזרה לתצוגה
                 w_part = round(max(xs) - min(xs), 1)
                 h_part = round(max(ys) - min(ys), 1)
                 h_txt = (
@@ -2073,13 +2341,15 @@ if upl_cix:
                 else:
                     side = 0
                 if side != 0 and len(pts) >= 2:
-                    tool_pts = calculate_path_v518(
+                    # pts הם קואורדינטות מכונה (לפני mirror) — מחשבים offset עליהן
+                    # ואז מחילים mirror על התוצאה לתצוגה
+                    tool_pts_machine = calculate_path_v518(
                         [[p[0], p[1]] for p in pts], rad,
                         'WRKR' if side == -1 else 'WRKL', False
                     )
                     fig_cix.add_trace(go.Scatter(
-                        x=[p[0] for p in tool_pts] + [None],
-                        y=[p[1] for p in tool_pts] + [None],
+                        x=[p[0] for p in tool_pts_machine] + [None],
+                        y=[lpy - p[1] for p in tool_pts_machine] + [None],
                         mode='lines+markers',
                         marker=dict(size=3, opacity=0.5),
                         line=dict(color='yellow', dash='dash', width=1),
@@ -2088,3 +2358,7 @@ if upl_cix:
                     ))
 
             st.plotly_chart(fig_cix, use_container_width=True, config={'scrollZoom': True})
+
+# --- rerun בסוף הסקריפט — אחרי כל הלולאות ---
+if st.session_state.pop('_need_rerun_smart', False):
+    st.rerun()
