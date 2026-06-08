@@ -15,6 +15,8 @@ from shapely.geometry import Polygon
 # 54.0: שקלול קאנטים (Edge Banding)
 st.set_page_config(page_title="Darwish 61.13 Local", layout="wide")
 
+VERSION = "61.13"
+
 CONFIG_FILE = "darwish_config.json"
 
 DEFAULT_TOOLS_ALON = [
@@ -941,7 +943,7 @@ def generate_cix_output(order, block_configs, wp_l, wp_w, actual_thick, geo_text
                 raw_pts = [(e['x'] - st.session_state.off_x, e['y'] - st.session_state.off_y) for e in entities]
                 n_p = len(raw_pts)
                 area = sum((raw_pts[i][0]*raw_pts[(i+1)%n_p][1] - raw_pts[(i+1)%n_p][0]*raw_pts[i][1]) for i in range(n_p)) / 2.0
-                if area > 0:  # CCW -> reverse properly (arc-aware)
+                if area < 0:  # CW -> reverse to CCW (Y-mirror יהפוך אותו ל-CW סופי)
                     def reverse_entities(ents):
                         """הופך מסלול מ-CCW ל-CW תוך שמירת תקינות גיאומטרית של קשתות."""
                         # בנה רשימת נקודות התחלה לכל ישות
@@ -970,7 +972,7 @@ def generate_cix_output(order, block_configs, wp_l, wp_w, actual_thick, geo_text
                 n_p = len(pts)
                 if n_p > 1:
                     area = sum((pts[i][0]*pts[(i+1)%n_p][1] - pts[(i+1)%n_p][0]*pts[i][1]) for i in range(n_p)) / 2.0
-                    if area > 0:  # CCW -> reverse to CW
+                    if area < 0:  # CW -> reverse to CCW (Y-mirror יהפוך אותו ל-CW סופי)
                         pts = pts[::-1]
                 entities = [{'type': 'START',
                              'x': pts[0][0] + st.session_state.off_x,
@@ -1653,7 +1655,7 @@ if upl:
             order = [b['id'] for b in sorted_blocks]
 
         # --- ייצור NC — תמיד מ-ops_original (לא מושפע מהתאמת פסיעות חכמה) ---
-        nc = ["%", "(DARWISH 60.9 - MPR + DXF)", f"N10 G90 G54 G21 G17"]; n_c = 20
+        nc = ["%", f"(DARWISH {VERSION} - MPR + DXF)", f"N10 G90 G54 G21 G17"]; n_c = 20
         last_tool_id = None
 
         # בניית visual_blocks ו-block_configs מה-ops המקוריים לצורך NC
@@ -1698,13 +1700,13 @@ if upl:
 
         nc.extend([f"N{n_c} M30", "%"])
         with col_cfg:
-            st.download_button(f"📥 הורד NC — {st.session_state.get('active_machine','?')} (60.9)", "\n".join(nc), f"{f_file.name}.nc")
+            st.download_button(f"📥 הורד NC — {st.session_state.get('active_machine','?')} ({VERSION})", "\n".join(nc), f"{f_file.name}.nc")
             # --- ייצור CIX — מ-block_configs המעובדים (כולל התאמת פסיעות חכמה) ---
             if order:
                 cix_data = generate_cix_output(order, block_configs, wp_l, wp_w, actual_thick, geo_texts, rotate)
             else:
                 cix_data = generate_cix_output([], {}, wp_l, wp_w, actual_thick, geo_texts, rotate)
-            st.download_button(f"📥 הורד CIX — {st.session_state.get('active_machine','?')} (60.9)", cix_data, f"{f_file.name}.cix",
+            st.download_button(f"📥 הורד CIX — {st.session_state.get('active_machine','?')} ({VERSION})", cix_data, f"{f_file.name}.cix",
                                key=f"dl_cix_{f_file.name}")
 
         # שמירת הגרף ב-session_state
@@ -2116,7 +2118,7 @@ if upl_dxf:
                 dxf_order = [b['id'] for b in dxf_sorted_blocks]
 
                 # NC — אותה לוגיקה כמו MPR
-                dxf_nc = ['%', '(DARWISH 60.9 - DXF)', 'N10 G90 G54 G21 G17']
+                dxf_nc = ['%', f'(DARWISH {VERSION} - DXF)', 'N10 G90 G54 G21 G17']
                 dxf_n_c = 20; dxf_last_tool = None
 
                 if dxf_order:
@@ -2137,13 +2139,13 @@ if upl_dxf:
                                     dxf_nc, dxf_n_c, dxf_last_tool = write_block_at_depth(b_cfg, vb, zv_f, it, dxf_nc, dxf_n_c, dxf_last_tool)
 
                 dxf_nc.extend([f"N{dxf_n_c} M30", "%"])
-                st.download_button(f"📥 הורד NC (DXF) — {st.session_state.get('active_machine','?')} (60.9)",
+                st.download_button(f"📥 הורד NC (DXF) — {st.session_state.get('active_machine','?')} ({VERSION})",
                     "\n".join(dxf_nc), f"{dxf_file.name}.nc",
                     key=f"dl_dxf_{dxf_file.name}")
                 # --- ייצור CIX ל-DXF ---
                 dxf_cix_data = generate_cix_output(
                     dxf_order, dxf_block_configs, dxf_wp_l, dxf_wp_w, dxf_thick, {}, rotate)
-                st.download_button(f"📥 הורד CIX (DXF) — {st.session_state.get('active_machine','?')} (60.9)", dxf_cix_data,
+                st.download_button(f"📥 הורד CIX (DXF) — {st.session_state.get('active_machine','?')} ({VERSION})", dxf_cix_data,
                     f"{dxf_file.name}.cix", key=f"dl_cix_dxf_{dxf_file.name}")
 
             with col_vis_d:
